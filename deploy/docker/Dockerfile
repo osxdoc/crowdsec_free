@@ -2,7 +2,7 @@
 #
 # One image with the engine, cscli, cswebui and csblocklistd.
 # Build from the repository root:
-#   docker build -f deploy/docker/Dockerfile -t crowdsec-free:local .
+#   docker build -f deploy/docker/Dockerfile -t crowdsec-free:v1.8.2 .
 
 FROM golang:1.27-alpine AS build
 
@@ -16,7 +16,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=local
+ARG VERSION=v1.8.2
 
 # Pure-Go SQLite: the image stays static and does not need libc/gcc.
 RUN set -eux; \

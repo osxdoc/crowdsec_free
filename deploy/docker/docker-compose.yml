@@ -2,12 +2,12 @@ name: crowdsec-free
 
 # Every service runs the same image: engine, cscli, cswebui and csblocklistd.
 x-app: &app
-  image: crowdsec-free:${CROWDSEC_VERSION:-local}
+  image: crowdsec-free:${CROWDSEC_VERSION:-v1.8.2}
   build:
     context: ../..
     dockerfile: deploy/docker/Dockerfile
     args:
-      VERSION: ${CROWDSEC_VERSION:-local}
+      VERSION: ${CROWDSEC_VERSION:-v1.8.2}
 
 x-volumes: &volumes
   - ./config:/etc/crowdsec
