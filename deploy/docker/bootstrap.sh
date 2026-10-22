@@ -54,6 +54,12 @@ configure() {
     # The web UI refuses to start with the placeholder hash: generate one.
     if grep -q 'REPLACE_ME_WITH_A_REAL_BCRYPT_HASH' "$CONFIG_DIR/webui.yaml" 2>/dev/null; then
         password="$WEBUI_ADMIN_PASSWORD"
+        # cswebui refuses shorter passwords and prints an error instead of a
+        # hash; without this guard that error text lands in webui.yaml.
+        if [ -n "$password" ] && [ "${#password}" -lt 8 ]; then
+            log "WEBUI_ADMIN_PASSWORD must be at least 8 characters"
+            exit 1
+        fi
 
         if [ -z "$password" ]; then
             password="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-16)"
@@ -131,6 +137,9 @@ register_capi() {
 # --- hub collections ------------------------------------------------------
 
 install_hub() {
+    # cscli writes the index here before the engine has ever started, so the
+    # directory does not exist yet on a fresh deployment.
+    mkdir -p "$CONFIG_DIR/hub"
     if [ "$SKIP_HUB_UPDATE" != "true" ]; then
         if cscli -c "$CONFIG_FILE" hub update --with-content; then
             log "hub index and data files updated"
