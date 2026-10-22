@@ -1,0 +1,20 @@
+# csblocklistd: self-hosted replacement for the CrowdSec Central API.
+listen: 0.0.0.0:8082
+db_path: /var/lib/crowdsec/data/blocklist.db
+
+# Used by cswebui. The bootstrap container fills this from
+# BLOCKLIST_ADMIN_TOKEN or generates one.
+admin_token: "CHANGE_ME_ADMIN_TOKEN"
+
+# Optional gate for new registrations; `cscli capi register` cannot send it.
+registration_token: ""
+
+community_scenario: crowdsec/community-blocklist
+token_ttl: 24h
+
+push:
+  # Share manual bans ("cscli" origin). Add "crowdsec" to share scenario hits.
+  accept_origins: ["cscli"]
+  max_alerts_per_request: 100
+  max_decisions_per_alert: 1000
+  default_duration: 4h

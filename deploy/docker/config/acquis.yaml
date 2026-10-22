@@ -1,0 +1,11 @@
+# Log sources. The compose file mounts the host's /var/log at /host/var/log
+# (read-only); add the files you want CrowdSec to parse here.
+filenames:
+  - /host/var/log/auth.log
+labels:
+  type: syslog
+---
+# Journald is available too: mount /run/log/journal into the container and use
+#   source: journalctl
+#   labels:
+#     type: syslog

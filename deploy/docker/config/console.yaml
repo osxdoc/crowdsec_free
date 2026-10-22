@@ -1,0 +1,6 @@
+# Share manual bans with the blocklist server. Without this the engine does
+# not push any signals.
+share_manual_decisions: true
+share_custom: true
+share_tainted: true
+share_context: false

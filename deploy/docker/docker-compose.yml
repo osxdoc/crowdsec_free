@@ -1,0 +1,109 @@
+name: crowdsec-free
+
+# Every service runs the same image: engine, cscli, cswebui and csblocklistd.
+x-app: &app
+  image: crowdsec-free:${CROWDSEC_VERSION:-local}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+    args:
+      VERSION: ${CROWDSEC_VERSION:-local}
+
+x-volumes: &volumes
+  - ./config:/etc/crowdsec
+  - crowdsec-data:/var/lib/crowdsec/data
+
+services:
+  # One-shot: writes the default config, generates the admin password and the
+  # blocklist token, registers the agent + UI machines, installs hub
+  # collections and GeoIP data. Must run before csblocklistd so that the
+  # blocklist server picks up the final admin token.
+  bootstrap:
+    <<: *app
+    command: ["/usr/local/bin/bootstrap.sh", "config"]
+    restart: "no"
+    environment:
+      HUB_COLLECTIONS: ${HUB_COLLECTIONS:-crowdsecurity/linux}
+      WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASSWORD:-}
+      BLOCKLIST_ADMIN_TOKEN: ${BLOCKLIST_ADMIN_TOKEN:-}
+      SKIP_HUB_UPDATE: ${SKIP_HUB_UPDATE:-false}
+    volumes: *volumes
+
+  # Self-hosted CAPI: engines register here, push manual decisions and pull the
+  # shared blocklist.
+  csblocklistd:
+    <<: *app
+    command: ["csblocklistd", "-config", "/etc/crowdsec/blocklist.yaml"]
+    restart: unless-stopped
+    volumes: *volumes
+    ports:
+      - "${BLOCKLIST_PORT:-8082}:8082"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # One-shot: subscribes the engine to the blocklist server (needs it healthy).
+  register:
+    <<: *app
+    command: ["/usr/local/bin/bootstrap.sh", "register"]
+    restart: "no"
+    environment:
+      BLOCKLIST_TIMEOUT: "120"
+    volumes: *volumes
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      csblocklistd:
+        condition: service_healthy
+
+  crowdsec:
+    <<: *app
+    command: ["crowdsec", "-c", "/etc/crowdsec/config.yaml"]
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/crowdsec
+      - crowdsec-data:/var/lib/crowdsec/data
+      # Read-only access to the host logs configured in acquis.yaml.
+      - /var/log:/host/var/log:ro
+    ports:
+      # Needed for bouncers on other hosts. Restrict/remove if not required.
+      - "${LAPI_PORT:-8080}:8080"
+    depends_on:
+      register:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  # Web UI: dashboard, decisions, config editing and the shared blocklist view.
+  cswebui:
+    <<: *app
+    command: ["cswebui", "-config", "/etc/crowdsec/webui.yaml"]
+    restart: unless-stopped
+    # Shares the engine's PID namespace so "Reload engine" can send SIGHUP.
+    pid: "service:crowdsec"
+    volumes: *volumes
+    ports:
+      - "${WEBUI_PORT:-8081}:8081"
+    depends_on:
+      crowdsec:
+        condition: service_healthy
+
+volumes:
+  crowdsec-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        # Must match api.server.trusted_ips in config.yaml.
+        - subnet: ${CROWDSEC_SUBNET:-172.28.0.0/16}

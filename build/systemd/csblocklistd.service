@@ -1,0 +1,18 @@
+[Unit]
+Description=CrowdSec self-hosted blocklist server
+Documentation=file:///usr/local/share/doc/crowdsec/self-hosted.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crowdsec
+Group=crowdsec
+Environment=LC_ALL=C LANG=C
+ExecStart=/usr/local/bin/csblocklistd -config /etc/crowdsec/blocklist.yaml
+Restart=always
+RestartSec=10
+StateDirectory=crowdsec
+
+[Install]
+WantedBy=multi-user.target

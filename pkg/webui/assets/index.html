@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrowdSec · self-hosted console</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2338bdf8'%3E%3Cpath d='M12 2 4 6v6c0 5 3.4 9.3 8 10 4.6-.7 8-5 8-10V6l-8-4Z'/%3E%3C/svg%3E">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form class="login-card" id="login-form">
+      <div class="logo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 4 6v6c0 5 3.4 9.3 8 10 4.6-.7 8-5 8-10V6l-8-4Zm0 2.2 6 3V12c0 3.9-2.5 7.3-6 8-3.5-.7-6-4.1-6-8V7.2l6-3Z"/></svg>
+        CrowdSec
+      </div>
+      <h1>Self-hosted console</h1>
+      <p class="subtitle">No cloud account, no subscription. Your engine, your data.</p>
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn block" type="submit" id="login-submit">Sign in</button>
+      <p class="hint" id="login-error" style="margin-top:12px;color:var(--danger)"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 4 6v6c0 5 3.4 9.3 8 10 4.6-.7 8-5 8-10V6l-8-4Zm0 2.2 6 3V12c0 3.9-2.5 7.3-6 8-3.5-.7-6-4.1-6-8V7.2l6-3Z"/></svg>
+        CrowdSec <span class="tag">free</span>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#/dashboard" data-route="dashboard">Dashboard</a>
+        <a href="#/alerts" data-route="alerts">Alerts</a>
+        <a href="#/decisions" data-route="decisions">Decisions</a>
+        <a href="#/geo" data-route="geo">Geo</a>
+        <a href="#/infrastructure" data-route="infrastructure">Infrastructure</a>
+        <a href="#/metrics" data-route="metrics">Metrics</a>
+        <a href="#/allowlists" data-route="allowlists">Allowlists</a>
+        <a href="#/blocklist" data-route="blocklist" id="nav-blocklist">Shared blocklist</a>
+        <a href="#/config" data-route="config">Configuration</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user" id="current-user">—</div>
+        <div id="version">cswebui</div>
+        <button class="btn secondary" id="logout" style="margin-top:10px;padding:6px 10px;font-size:12px">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="content" id="view"></main>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <div id="modal-root"></div>
+
+  <script src="/worldmap.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

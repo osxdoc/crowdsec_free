@@ -52,6 +52,13 @@ cmd/crowdsec-cli/cscli
 cmd/crowdsec/crowdsec
 cmd/notification-*/notification-*
 
+# self-hosted tools
+/cswebui
+/csblocklistd
+
+# local build caches and scratch environments
+/.build/
+
 # Test cache (downloaded files)
 .cache
 
@@ -71,3 +78,12 @@ __pycache__
 .agents/
 .claude/
 .worktrees/
+
+# docker deployment: generated at runtime
+/deploy/docker/.env
+/deploy/docker/config/local_api_credentials.yaml
+/deploy/docker/config/cswebui_credentials.yaml
+/deploy/docker/config/online_api_credentials.yaml
+/deploy/docker/config/hub/
+/deploy/docker/config/acquis.d/
+/deploy/docker/config/*.bak

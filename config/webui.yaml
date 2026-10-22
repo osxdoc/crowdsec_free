@@ -1,0 +1,56 @@
+# cswebui - self-hosted web interface for a CrowdSec Security Engine.
+#
+# No crowdsec.net account, no console subscription: this UI talks to the local
+# API on the same host and edits the engine configuration directly.
+#
+# Start with: cswebui -config /etc/crowdsec/webui.yaml
+
+listen: 127.0.0.1:8081
+
+lapi:
+  # Machine credentials used to talk to the local API. By default the agent's
+  # own credentials are reused, so nothing has to be registered.
+  credentials_path: /etc/crowdsec/local_api_credentials.yaml
+  # url: http://127.0.0.1:8080
+  # login: cswebui
+  # password: secret
+  # insecure_skip_verify: false
+
+engine:
+  # Directory holding config.yaml, acquis.yaml, profiles.yaml, ...
+  config_dir: /etc/crowdsec
+  # How "Reload engine" applies changes. Either a pid file (SIGHUP) or a
+  # command. Pick one; the command is the safer choice under systemd.
+  # pid_file: /run/crowdsec.pid
+  reload_command: ["/bin/systemctl", "reload", "crowdsec"]
+  # If cswebui runs as the same user as the engine, this needs no privileges:
+  # reload_command: ["/usr/bin/pkill", "-HUP", "-x", "crowdsec"]
+
+# Files that may be edited in the UI, relative to engine.config_dir.
+# Keep credential files out of this list.
+files:
+  - acquis.yaml
+  - profiles.yaml
+  - config.yaml
+  - console.yaml
+
+auth:
+  users:
+    - username: admin
+      # Generate with: cswebui -hash-password
+      password_hash: REPLACE_ME_WITH_A_REAL_BCRYPT_HASH
+  session_ttl: 12h
+  # Enable when serving over HTTPS (reverse proxy or TLS termination).
+  secure_cookie: false
+
+# Optional extra data sources. The SQLite database adds machines, bouncers and
+# geo/AS aggregates; the Prometheus endpoint adds parser, bucket, acquisition
+# and LAPI statistics. Both are optional: the UI degrades gracefully.
+# data:
+#   db_path: /var/lib/crowdsec/data/crowdsec.db
+#   metrics_url: http://127.0.0.1:6060/metrics
+
+# Optional: manage your own blocklist server from the same UI.
+# blocklist:
+#   admin_url: http://127.0.0.1:8082
+#   admin_token: "generate with: csblocklistd -gen-admin-token"

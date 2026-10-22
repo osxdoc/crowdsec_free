@@ -81,6 +81,16 @@ CrowdSec ships by default with scenarios (brute force, port scan, web scan, etc.
 
 [Follow our documentation to install CrowdSec in a few minutes on Linux, Windows, Docker, OpnSense, Kubernetes, and more.](https://docs.crowdsec.net/)
 
+### Self-hosted, console-free setup
+
+This fork ships two extra services so a deployment needs no crowdsec.net
+account: `cswebui`, a self-hosted web UI for monitoring and configuration, and
+`csblocklistd`, a CAPI-compatible blocklist server that engines register
+against with `cscli capi register --url ...`. Build them with
+`gmake build-tools`, or run the whole stack with Docker Compose:
+`deploy/docker/`. See [docs/self-hosted.md](docs/self-hosted.md) for setup,
+configuration and limitations.
+
 
 ## Resources
 

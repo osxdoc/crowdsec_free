@@ -53,7 +53,7 @@ func (cli *cliCapi) NewCommand() *cobra.Command {
 	return cmd
 }
 
-func (cli *cliCapi) register(ctx context.Context, capiUserPrefix string, outputFile string) error {
+func (cli *cliCapi) register(ctx context.Context, capiUserPrefix string, outputFile, capiURL string) error {
 	cfg := cli.cfg()
 
 	capiUser, err := idgen.GenerateMachineID(capiUserPrefix)
@@ -68,9 +68,9 @@ func (cli *cliCapi) register(ctx context.Context, capiUserPrefix string, outputF
 
 	password := strfmt.Password(pstr)
 
-	apiurl, err := url.Parse(CAPIBaseURL)
+	apiurl, err := url.Parse(capiURL)
 	if err != nil {
-		return fmt.Errorf("unable to parse api url %s: %w", CAPIBaseURL, err)
+		return fmt.Errorf("unable to parse api url %s: %w", capiURL, err)
 	}
 
 	_, err = apiclient.RegisterClient(ctx, &apiclient.Config{
@@ -80,10 +80,10 @@ func (cli *cliCapi) register(ctx context.Context, capiUserPrefix string, outputF
 		VersionPrefix: "v3",
 	}, nil)
 	if err != nil {
-		return fmt.Errorf("api client register ('%s'): %w", CAPIBaseURL, err)
+		return fmt.Errorf("api client register ('%s'): %w", capiURL, err)
 	}
 
-	log.Infof("Successfully registered to Central API (CAPI)")
+	log.Infof("Successfully registered to %s", capiURL)
 
 	var dumpFile string
 
@@ -99,7 +99,7 @@ func (cli *cliCapi) register(ctx context.Context, capiUserPrefix string, outputF
 	apiCfg := csconfig.ApiCredentialsCfg{
 		Login:    capiUser,
 		Password: password.String(),
-		URL:      CAPIBaseURL,
+		URL:      capiURL,
 	}
 
 	apiConfigDump, err := yaml.Marshal(apiCfg)
@@ -129,6 +129,7 @@ func (cli *cliCapi) newRegisterCmd() *cobra.Command {
 	var (
 		capiUserPrefix string
 		outputFile     string
+		capiURL        string
 	)
 
 	cmd := &cobra.Command{
@@ -146,11 +147,12 @@ func (cli *cliCapi) newRegisterCmd() *cobra.Command {
 				return err
 			}
 
-			return cli.register(cmd.Context(), capiUserPrefix, outputFile)
+			return cli.register(cmd.Context(), capiUserPrefix, outputFile, capiURL)
 		},
 	}
 
 	cmd.Flags().StringVarP(&outputFile, "file", "f", "", "output file destination")
+	cmd.Flags().StringVar(&capiURL, "url", CAPIBaseURL, "Central API base URL (point this at your own blocklist server)")
 	cmd.Flags().StringVar(&capiUserPrefix, "schmilblick", "", "set a schmilblick (use in tests only)")
 
 	_ = cmd.Flags().MarkHidden("schmilblick")

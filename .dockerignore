@@ -10,3 +10,6 @@
 /rpm
 /test
 /crowdsec-v*
+
+# local build caches / scratch environments
+/.build

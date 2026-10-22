@@ -1,0 +1,36 @@
+# cswebui inside the compose stack.
+listen: 0.0.0.0:8081
+
+lapi:
+  # Machine created by the bootstrap container.
+  credentials_path: /etc/crowdsec/cswebui_credentials.yaml
+
+engine:
+  config_dir: /etc/crowdsec
+  # cswebui shares the PID namespace of the crowdsec container (compose
+  # "pid: service:crowdsec"), so it can signal the engine directly.
+  reload_command: ["pkill", "-HUP", "-x", "crowdsec"]
+
+files:
+  - acquis.yaml
+  - profiles.yaml
+  - console.yaml
+
+auth:
+  users:
+    - username: admin
+      # Replaced by the bootstrap container: it hashes WEBUI_ADMIN_PASSWORD or
+      # generates one and prints it to the bootstrap logs.
+      password_hash: REPLACE_ME_WITH_A_REAL_BCRYPT_HASH
+  session_ttl: 12h
+  secure_cookie: false
+
+data:
+  # Read-only access to machines, bouncers and geo/AS aggregates.
+  db_path: /var/lib/crowdsec/data/crowdsec.db
+  # Engine metrics (prometheus section in config.yaml).
+  metrics_url: http://crowdsec:6060/metrics
+
+blocklist:
+  admin_url: http://csblocklistd:8082
+  admin_token: "CHANGE_ME_ADMIN_TOKEN"

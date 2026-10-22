@@ -321,6 +321,17 @@ cscli:  ## Build cscli
 crowdsec:  ## Build crowdsec
 	@$(MAKE) -C $(CROWDSEC_FOLDER) build $(MAKE_FLAGS)
 
+.PHONY: build-tools
+build-tools: cswebui csblocklistd  ## Build the self-hosted web UI and blocklist server
+
+.PHONY: cswebui
+cswebui:  ## Build cswebui (self-hosted web interface)
+	$(GO) build -trimpath -tags $(GO_TAGS) -ldflags "-X main.version=$(BUILD_VERSION)" -o cswebui ./cmd/cswebui
+
+.PHONY: csblocklistd
+csblocklistd:  ## Build csblocklistd (self-hosted blocklist server)
+	$(GO) build -trimpath -tags $(GO_TAGS) -ldflags "-X main.version=$(BUILD_VERSION)" -o csblocklistd ./cmd/csblocklistd
+
 # Regenerate the WAF challenge JS artifacts: the bundled fpscanner source
 # (fpscanner/bundle.js), the obfuscator runtime (obfuscate/index.wasm.gz),
 # and the build-time pre-obfuscated initial bundle (initial_bundle.js.gz).
