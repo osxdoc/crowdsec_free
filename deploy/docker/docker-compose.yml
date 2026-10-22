@@ -2,8 +2,9 @@ name: crowdsec-free
 
 # Every service runs the same image: engine, cscli, cswebui and csblocklistd.
 # A deployment normally keeps its own copy of this file next to its ./config
-# and ./data. Only "build.context" and the log mounts should differ; every
-# other knob is a variable below, so the copies stay comparable.
+# and ./data. Only the build source (the context, or the whole "build:" block
+# when the image is built with build-image.sh) and the log mounts should differ;
+# every other knob is a variable below, so the copies stay comparable.
 x-app: &app
   image: crowdsec-free:${CROWDSEC_VERSION:-v1.8.2}
   build:

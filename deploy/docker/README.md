@@ -46,6 +46,26 @@ Provisioning runs in two idempotent one-shot services:
 
 The engine starts once both are done.
 
+## Building without a source tree on the host
+
+The Quick Start builds from the checkout you cloned. If you develop somewhere
+else and only want to run the stack here, push first and let the host build the
+commit it is going to run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/<owner>/crowdsec_free/master/deploy/docker/build-image.sh \
+  | sh -s -- <commit-ish> v1.8.2
+docker compose up -d            # no --build: the image already exists
+```
+
+`build-image.sh` fetches the archive of that commit from GitHub, builds it in a
+temporary directory and removes it, so nothing is kept on the host. Images are
+native to the architecture of the machine that builds them, so run the script
+where the containers run. The second argument is the version string compiled
+into the binaries and the image tag: it has to match `CROWDSEC_VERSION` in
+`.env`. Drop the `build:` block from your compose file in this mode, otherwise a
+later `up -d --build` fails on the missing build context.
+
 ## Log sources
 
 `crowdsec` mounts the host's `/var/log` at `/host/var/log` (read-only). Add the
@@ -102,8 +122,9 @@ removes and upgrades hub items, and reloads the engine after each change with
 State that is not configuration lives in `./data` (`crowdsec.db`, GeoIP
 databases). `.env` selects ports, their bind addresses (`LAPI_BIND`,
 `APPSEC_BIND`, `WEBUI_BIND`, `BLOCKLIST_BIND`), `TZ` and `CROWDSEC_SUBNET`. A
-deployment with its own compose file should change only `build.context` and the
-read-only log mounts, so `diff` against this template stays empty otherwise.
+deployment with its own compose file should change only the build source (the
+context, or the whole `build:` block when the image comes from `build-image.sh`)
+and the read-only log mounts, so `diff` against this template stays small otherwise.
 
 ## Operations
 
