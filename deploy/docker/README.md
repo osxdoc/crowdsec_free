@@ -2,7 +2,7 @@
 
 One image contains the engine, `cscli`, the web UI (`cswebui`) and the
 blocklist server (`csblocklistd`); Compose runs them as separate services that
-share a configuration directory and a data volume.
+share a configuration directory and a data directory.
 
 ```
             ┌────────────────────────────┐
@@ -30,7 +30,9 @@ docker compose up -d --build
 docker compose logs -f bootstrap   # first start: credentials, hub/GeoIP download
 ```
 
-Then open `http://<host>:8081` and log in as `admin`.
+Then open `http://127.0.0.1:8081` and log in as `admin`. The UI is bound to
+localhost by default; set `WEBUI_BIND=0.0.0.0` in `.env` to reach it from
+elsewhere, behind a TLS proxy.
 
 Provisioning runs in two idempotent one-shot services:
 
@@ -74,9 +76,11 @@ By default only manual bans (`origin: cscli`) are shared. Set
 `share_manual_decisions: true` in `console.yaml` on those engines; raise
 `push.accept_origins` in `config/blocklist.yaml` to also share scenario hits.
 
-Bouncers on other hosts can talk to the published LAPI on `:8080`. Add their
-source addresses to `api.server.trusted_ips` (admin operations) and register
-them with `docker compose exec crowdsec cscli bouncers add <name>`.
+Bouncers on the same host (or in the host network) reach the LAPI on
+`127.0.0.1:8080` and appsec on `127.0.0.1:7422`; set `LAPI_BIND`/`APPSEC_BIND`
+to `0.0.0.0` for bouncers on other hosts. Add their source addresses to
+`api.server.trusted_ips` (admin operations) and register them with
+`docker compose exec crowdsec cscli bouncers add <name>`.
 
 ## Configuration
 
@@ -95,29 +99,36 @@ Files in `webui.yaml` under `files:` are editable from the UI. The Hub page inst
 removes and upgrades hub items, and reloads the engine after each change with
 `pkill -HUP` through the shared PID namespace.
 
+State that is not configuration lives in `./data` (`crowdsec.db`, GeoIP
+databases). `.env` selects ports, their bind addresses (`LAPI_BIND`,
+`APPSEC_BIND`, `WEBUI_BIND`, `BLOCKLIST_BIND`), `TZ` and `CROWDSEC_SUBNET`. A
+deployment with its own compose file should change only `build.context` and the
+read-only log mounts, so `diff` against this template stays empty otherwise.
+
 ## Operations
 
 ```sh
 docker compose ps
 docker compose logs -f cswebui
-docker compose restart crowdsec          # picks up new hub items
+docker compose restart crowdsec          # changes made outside the UI
 docker compose run --rm bootstrap config   # re-run config/credentials/hub
 docker compose run --rm register           # re-run blocklist registration
 docker compose pull && docker compose up -d --build   # upgrade
 ```
 
-Backup: `docker compose stop crowdsec csblocklistd`, then archive
-`./config` and the `crowdsec-data` volume
-(`docker run --rm -v crowdsec-free_crowdsec-data:/data -v $PWD:/backup alpine tar czf /backup/data.tgz -C /data .`).
+Backup: `docker compose stop crowdsec csblocklistd`, then archive `./config`
+and `./data` — both are bind mounts next to the compose file.
 
 ## Security notes
 
-- The UI is HTTP only. Put a TLS reverse proxy in front of `:8081` (and set
-  `secure_cookie: true`), or publish it on localhost only.
-- Ports `:8080` (LAPI) and `:8082` (blocklist) are published for convenience.
-  Remove the mappings if all bouncers/engines run inside the compose network.
-  The blocklist registration endpoint is unauthenticated by default, like the
-  CAPI; restrict it with firewall rules or `registration_token`.
+- The UI is HTTP only and bound to `127.0.0.1` by default (`WEBUI_BIND`). Put a
+  TLS reverse proxy in front of it (and set `secure_cookie: true`) before
+  publishing it on the network.
+- `:8080` (LAPI), `:7422` (appsec) and `:8082` (blocklist) are published on
+  localhost by default. Drop the mappings entirely if all bouncers/engines run
+  inside the compose network. The blocklist registration endpoint is
+  unauthenticated by default, like the CAPI; restrict it with firewall rules or
+  `registration_token`.
 - The admin token protects `/admin/v1` on the blocklist server; the UI stores it
   in `webui.yaml`. Keep `config/` at mode `0700` if you care about tokens.
 - `config.yaml` trusts `172.28.0.0/16` so the UI container may delete alerts.
@@ -129,7 +140,7 @@ Backup: `docker compose stop crowdsec csblocklistd`, then archive
 | ------- | --- |
 | UI says `password_hash is not a bcrypt hash` | bootstrap did not run; `docker compose run --rm bootstrap config` and restart `cswebui` |
 | `docker compose logs bootstrap` shows hub download errors | offline host; set `SKIP_HUB_UPDATE=true`, mount an existing `hub/` directory |
-| No GeoIP data (empty country/AS) | run bootstrap with hub content (`SKIP_HUB_UPDATE=false`), check `crowdsec-data` volume for `GeoLite2-City.mmdb` |
+| No GeoIP data (empty country/AS) | run bootstrap with hub content (`SKIP_HUB_UPDATE=false`), check `./data` for `GeoLite2-City.mmdb` |
 | No alerts | check `acquis.yaml` paths and `docker compose logs crowdsec`; the host `/var/log` must contain the files |
 | Engine exits with CAPI auth errors | blocklist DB was reset: delete `config/online_api_credentials.yaml` and re-run bootstrap |
 | `Reload engine` fails | ensure `pid: "service:crowdsec"` is still set for `cswebui` |
