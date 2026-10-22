@@ -1,27 +1,82 @@
-
 <p align="center">
 <img src="https://raw.githubusercontent.com/crowdsecurity/crowdsec-docs/main/crowdsec-docs/static/img/crowdsec_logo.png" alt="CrowdSec" title="CrowdSec" width="400" height="260"/>
-</p>
-</br>
-</br>
-</br>
-<p align="center">
-<img src="https://github.com/crowdsecurity/crowdsec/actions/workflows/go-tests.yml/badge.svg">
-<img src="https://github.com/crowdsecurity/crowdsec/actions/workflows/bats.yml/badge.svg">
-<img src="https://img.shields.io/github/license/crowdsecurity/crowdsec">
-<a href="https://discord.com/invite/crowdsec">
-  <img src="https://img.shields.io/discord/921520481163673640?label=Discord&logo=discord">
-</a>
-<img src="https://img.shields.io/twitter/follow/Crowd_Security?style=social">
 </p>
 
 <h1 align="center">CrowdSec: open-source IDS/IPS, WAF and bot detection</h1>
 
+<p align="center">
+<img src="https://img.shields.io/github/license/osxdoc/crowdsec_free">
+<a href="docs/self-hosted.md">Self-hosted docs</a> ·
+<a href="deploy/docker/README.md">Docker deployment</a>
+</p>
+
+> **This is the `crowdsec_free` fork.** The security engine itself is upstream
+> CrowdSec, unchanged; `cscli` gains one flag and the fork ships a
+> **self-hosted web UI** plus a **self-hosted blocklist server**, so monitoring,
+> configuration and blocklist sharing work without the crowdsec.net console and
+> without a subscription. Upstream project:
+> [crowdsecurity/crowdsec](https://github.com/crowdsecurity/crowdsec).
+
 _CrowdSec is an open-source and participative security solution offering crowdsourced server detection and protection against malicious IPs. Detect and block with our Security Engine, contribute to the network, and enjoy our real-time community blocklist._
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/crowdsecurity/crowdsec-docs/main/crowdsec-docs/static/img/simplified_SE_overview.svg" alt="CrowdSec schema" title="CrowdSec Schema"/>
+<img src="docs/images/dashboard.jpg" alt="Self-hosted dashboard with world map" title="Self-hosted dashboard"/>
 </p>
+
+## What this fork adds
+
+| Component | Purpose |
+| --------- | ------- |
+| `cswebui` | Self-hosted web UI: dashboard (alerts, origin map, parsers, buckets), alerts, decisions, allowlists, infrastructure, metrics, config editor, engine reload. Local accounts, CSRF protection, embedded assets — no external CDN. |
+| `csblocklistd` | CAPI-compatible blocklist server: engines register, push manual bans and pull a shared list. Served decisions look like the usual community blocklist. |
+| `cscli capi register --url ...` | One added flag so engines can register against your own server. The default stays `api.crowdsec.net`. |
+| `deploy/docker/` | Single-image Compose stack (engine + UI + blocklist server) with idempotent bootstrap, hub/GeoIP download and healthchecks. |
+
+The UI reads the LAPI SQLite database read-only (machines, bouncers, country/AS
+aggregates) and scrapes the engine's Prometheus endpoint (parser, bucket,
+acquisition and LAPI statistics). Details, security notes and limitations:
+[docs/self-hosted.md](docs/self-hosted.md).
+
+## Quick start
+
+### Docker Compose (recommended)
+
+```sh
+git clone https://github.com/osxdoc/crowdsec_free.git
+cd crowdsec_free/deploy/docker
+cp .env.example .env      # set WEBUI_ADMIN_PASSWORD and BLOCKLIST_ADMIN_TOKEN
+docker compose up -d --build
+```
+
+Open `http://<host>:8081` and log in as `admin`. The one-shot bootstrap
+registers the engine, installs the `crowdsecurity/linux` collection plus
+GeoLite2 data, and subscribes the engine to the bundled blocklist server.
+See [deploy/docker/README.md](deploy/docker/README.md) for log sources, ports,
+bouncers, backups and troubleshooting.
+
+### From source
+
+```sh
+gmake build        # crowdsec and cscli (GNU make >= 4.1)
+gmake build-tools  # cswebui and csblocklistd
+```
+
+Configuration examples live in [config/webui.yaml](config/webui.yaml) and
+[config/blocklist.yaml](config/blocklist.yaml); full setup in
+[docs/self-hosted.md](docs/self-hosted.md).
+
+## Point other engines at your blocklist server
+
+The bundled server replaces the Central API for sharing decisions:
+
+```sh
+cscli capi register --url http://<host>:8082/ -f /etc/crowdsec/online_api_credentials.yaml
+systemctl reload crowdsec
+```
+
+By default only manual bans are shared (`origin: cscli`); scenario hits can be
+enabled per engine and on the server. The UI manages entries, connected engines
+and their countries/networks.
 
 ## Features & Advantages
 
@@ -33,24 +88,31 @@ It detects bad behaviors by analyzing log sources and HTTP requests, and allows 
 
 [Detection rules are available on our hub](https://hub.crowdsec.net) under MIT license.
 
-### CrowdSec Community Blocklist
+### Self-hosted UI instead of the hosted console
 
-<a href="https://docs.crowdsec.net/docs/next/central_api/community_blocklist">
+Upstream CrowdSec offers a hosted console with paid plans. This fork replaces it
+with `cswebui`, which runs next to the engine and talks to the local API only:
 
-The "Community Blocklist" is a curated list of IP addresses identified as malicious by CrowdSec. The Security Engine proactively blocks the IP addresses of this blocklist, preventing malevolent IPs from reaching your systems.
+- alerts with origin map, countries, networks (AS) and event details
+- active decisions, manual bans and unbans, centralized allowlists
+- machines, bouncers, parser/bucket/acquisition and LAPI metrics
+- configuration editor for `acquis.yaml`, `profiles.yaml`, `console.yaml`
+  with YAML validation, backups and a reload button
 
-[![CrowdSec Community Blocklist](https://raw.githubusercontent.com/crowdsecurity/crowdsec-docs/main/crowdsec-docs/static/img/console/blocklists/data_insights.png)](https://docs.crowdsec.net/docs/next/central_api/community_blocklist)
+No account needed, and nothing is sent to crowdsec.net unless you configure the
+engine that way. The UI is served from the same repository and works offline.
 
-</a>
+### Community blocklist or your own
 
-### Console - Monitoring & Automation of your security stack
-
-[![CrowdSec Console](https://raw.githubusercontent.com/crowdsecurity/crowdsec-docs/main/crowdsec-docs/static/img/console/alert-explorer/overview-full-dark.png)](https://docs.crowdsec.net/u/console/intro)
+Upstream's community blocklist is pulled from the Central API. This fork adds
+`csblocklistd`, a compatible server you host yourself: engines push their
+signals there and pull the aggregated list, so a fleet can share detections
+without an external account. The two are alternatives — the engine points at one
+CAPI URL.
 
 ### Multiple Platforms support
 
 [![Multiple Platforms support](https://raw.githubusercontent.com/crowdsecurity/crowdsec-docs/main/crowdsec-docs/static/img/supported_platforms.png)](https://docs.crowdsec.net/)
-
 
 ## How CrowdSec compares
 
@@ -61,8 +123,8 @@ blocklist, so an IP that hits one user gets blocked for everyone else before it
 reaches them.
 
 **To ModSecurity, Coraza and naxsi** — the AppSec component is a WAF built on
-Coraza, so SecLang rules and the OWASP Core Rule Set load as-is. On top of that 
-it adds a YAML rule format, and shares the IP reputation and remediation layer 
+Coraza, so SecLang rules and the OWASP Core Rule Set load as-is. On top of that
+it adds a YAML rule format, and shares the IP reputation and remediation layer
 with the log-based engine.
 
 **Bot and scraper detection** — AppSec can answer a suspicious request with a
@@ -77,27 +139,22 @@ CrowdSec ships by default with scenarios (brute force, port scan, web scan, etc.
 
 ## Installation
 
-<!-- make this an image with link ?-->
+The engine, hub and bouncers are installed exactly like upstream:
+[follow the CrowdSec documentation](https://docs.crowdsec.net/) for Linux,
+Windows, Docker, OpnSense, Kubernetes and more.
 
-[Follow our documentation to install CrowdSec in a few minutes on Linux, Windows, Docker, OpnSense, Kubernetes, and more.](https://docs.crowdsec.net/)
-
-### Self-hosted, console-free setup
-
-This fork ships two extra services so a deployment needs no crowdsec.net
-account: `cswebui`, a self-hosted web UI for monitoring and configuration, and
-`csblocklistd`, a CAPI-compatible blocklist server that engines register
-against with `cscli capi register --url ...`. Build them with
-`gmake build-tools`, or run the whole stack with Docker Compose:
-`deploy/docker/`. See [docs/self-hosted.md](docs/self-hosted.md) for setup,
-configuration and limitations.
-
+The two extra services are built with `gmake build-tools` or deployed with the
+Compose stack above; their configuration is documented in
+[docs/self-hosted.md](docs/self-hosted.md).
 
 ## Resources
 
- - [Console](https://app.crowdsec.net): Supercharge your CrowdSec setup with visualization, management capabilities, extra blocklists and premium features.
- - [Documentation](https://docs.crowdsec.net): Learn how to exploit your CrowdSec setup to deter more attacks.
- - [Discord](https://discord.gg/crowdsec): A question or a suggestion? This is the place.
- - [Hub](https://hub.crowdsec.net): Improve your stack protection, find the relevant remediation components for your infrastructure.
- - [Public Roadmap](https://roadmap.crowdsec.net/): Vote for your favorite features and submit ideas to influence what we build next.
- - [CrowdSec Academy](https://academy.crowdsec.net/): Learn and grow with our courses.
- - [Corporate Website](https://crowdsec.net): For everything else.
+ - [Self-hosted setup](docs/self-hosted.md): web UI, blocklist server, data sources, limitations.
+ - [Docker deployment](deploy/docker/README.md): Compose stack, bootstrap, operations.
+ - [Documentation](https://docs.crowdsec.net): upstream engine, hub and bouncer docs.
+ - [Hub](https://hub.crowdsec.net): scenarios, parsers and remediation components.
+ - [Discord](https://discord.gg/crowdsec): upstream community chat.
+ - [Public Roadmap](https://roadmap.crowdsec.net/): vote on upstream features.
+ - [CrowdSec Academy](https://academy.crowdsec.net/): upstream courses.
+ - [Console](https://app.crowdsec.net): the hosted upstream console. Optional and
+   paid; this fork does not require it.
