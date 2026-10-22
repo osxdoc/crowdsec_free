@@ -131,6 +131,10 @@ and `./data` — both are bind mounts next to the compose file.
   `registration_token`.
 - The admin token protects `/admin/v1` on the blocklist server; the UI stores it
   in `webui.yaml`. Keep `config/` at mode `0700` if you care about tokens.
+- `bootstrap` replaces the placeholder in `config/webui.yaml` (password hash) and
+  `config/blocklist.yaml` (admin token). Those two files are tracked, so running the
+  stack from inside the clone dirties the repository with real secrets: keep the
+  deployment elsewhere, and run `scripts/leak-check.sh` before you push.
 - `config.yaml` trusts `172.28.0.0/16` so the UI container may delete alerts.
   If you change `CROWDSEC_SUBNET`, update `trusted_ips` too.
 

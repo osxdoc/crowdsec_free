@@ -79,11 +79,14 @@ __pycache__
 .claude/
 .worktrees/
 
-# docker deployment: generated at runtime
+# docker deployment: a run inside deploy/docker fills ./config (hub content,
+# credentials, engine defaults) and creates ./data (SQLite DBs, GeoIP). Only
+# the templates listed below are tracked; new ones need an explicit "!" line.
 /deploy/docker/.env
-/deploy/docker/config/local_api_credentials.yaml
-/deploy/docker/config/cswebui_credentials.yaml
-/deploy/docker/config/online_api_credentials.yaml
-/deploy/docker/config/hub/
-/deploy/docker/config/acquis.d/
-/deploy/docker/config/*.bak
+/deploy/docker/data/
+/deploy/docker/config/*
+!/deploy/docker/config/acquis.yaml
+!/deploy/docker/config/blocklist.yaml
+!/deploy/docker/config/config.yaml
+!/deploy/docker/config/console.yaml
+!/deploy/docker/config/webui.yaml

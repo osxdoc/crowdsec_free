@@ -34,6 +34,10 @@ Say which, in the PR body.
 - Use golangci-lint v2.13, the version CI pins. Other versions report different things.
 - Don't restructure working code to satisfy a linter that's switched off. Check the `disable:`
   list in `.golangci.yml` before "fixing" something it never complained about.
+- Before pushing to a public remote: `scripts/leak-check.sh && git push`. It scans what a
+  commit from this working tree would contain — secrets, host addresses, personal paths.
+  Its main target: `deploy/docker/config/*.yaml` are tracked templates, and a local
+  `docker compose up` writes a real password hash and admin token into them.
 
 ### Running it for real
 
