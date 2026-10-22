@@ -233,40 +233,50 @@ func writeFileAtomic(filename string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+// errNoReloadMethod is returned when neither engine.pid_file nor
+// engine.reload_command is configured.
+var errNoReloadMethod = errors.New(
+	"no reload method configured: set engine.pid_file or engine.reload_command in the cswebui config")
+
+// reloadEngine makes the engine re-read its configuration and hub files.
+func (s *Server) reloadEngine(ctx context.Context) (string, error) {
 	if s.cfg.Engine.PIDFile != "" {
-		output, err := s.reloadViaSignal()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "%s", err)
-			return
-		}
-
-		s.log.Infof("user %q reloaded the engine (SIGHUP)", currentUser(r))
-		writeJSON(w, http.StatusOK, map[string]string{"message": "engine reloaded", "output": output})
-
-		return
+		return s.reloadViaSignal()
 	}
 
 	if len(s.cfg.Engine.ReloadCommand) > 0 {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, s.cfg.Engine.ReloadCommand[0], s.cfg.Engine.ReloadCommand[1:]...) //nolint:gosec
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			s.log.Errorf("reload command failed: %s: %s", err, output)
-			writeError(w, http.StatusInternalServerError, "reload command failed: %s: %s", err, strings.TrimSpace(string(output)))
+			text := strings.TrimSpace(string(output))
+			return text, fmt.Errorf("reload command failed: %w: %s", err, text)
+		}
+
+		return strings.TrimSpace(string(output)), nil
+	}
+
+	return "", errNoReloadMethod
+}
+
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	output, err := s.reloadEngine(r.Context())
+	if err != nil {
+		if errors.Is(err, errNoReloadMethod) {
+			writeError(w, http.StatusNotImplemented, "%s", err)
 			return
 		}
 
-		s.log.Infof("user %q reloaded the engine with %v", currentUser(r), s.cfg.Engine.ReloadCommand)
-		writeJSON(w, http.StatusOK, map[string]string{"message": "engine reloaded", "output": strings.TrimSpace(string(output))})
+		s.log.Errorf("engine reload failed: %s: %s", err, output)
+		writeError(w, http.StatusInternalServerError, "%s", err)
 
 		return
 	}
 
-	writeError(w, http.StatusNotImplemented,
-		"no reload method configured: set engine.pid_file or engine.reload_command in the cswebui config")
+	s.log.Infof("user %q reloaded the engine", currentUser(r))
+	writeJSON(w, http.StatusOK, map[string]string{"message": "engine reloaded", "output": output})
 }
 
 func (s *Server) reloadViaSignal() (string, error) {

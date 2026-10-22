@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
@@ -32,6 +33,11 @@ type Server struct {
 	state     *StateStore
 	version   string
 	startedAt time.Time
+	// hubMu serializes hub changes: concurrent cscli runs would race on the same
+	// files and on the local API database.
+	hubMu sync.Mutex
+	// runCscli exists so tests can capture the arguments without running cscli.
+	runCscli func(ctx context.Context, args ...string) (string, error)
 }
 
 type ctxKey string
@@ -87,6 +93,8 @@ func NewServer(cfg *Config, log *logrus.Logger, version string) (*Server, error)
 		version:   version,
 		startedAt: time.Now(),
 	}
+
+	server.runCscli = server.execCscli
 
 	if cfg.Blocklist != nil {
 		server.blocklist = newBlocklistClient(cfg.Blocklist)
@@ -159,6 +167,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config/{name...}", s.withAuth(s.handleGetConfig))
 	mux.HandleFunc("PUT /api/config/{name...}", s.withAuth(s.handlePutConfig))
 	mux.HandleFunc("POST /api/reload", s.withAuth(s.handleReload))
+
+	mux.HandleFunc("GET /api/hub", s.withAuth(s.handleHub))
+	mux.HandleFunc("POST /api/hub/update", s.withAuth(s.handleHubAction("update")))
+	mux.HandleFunc("POST /api/hub/upgrade", s.withAuth(s.handleHubAction("upgrade")))
+	mux.HandleFunc("POST /api/hub/install", s.withAuth(s.handleHubAction("install")))
+	mux.HandleFunc("POST /api/hub/remove", s.withAuth(s.handleHubAction("remove")))
 
 	mux.HandleFunc("GET /api/blocklist/stats", s.withAuth(s.handleBlocklistStats))
 	mux.HandleFunc("GET /api/blocklist/decisions", s.withAuth(s.handleBlocklistDecisions))
