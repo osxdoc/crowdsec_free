@@ -138,28 +138,28 @@ func TestSealAllowlistCookieTTLOverride(t *testing.T) {
 
 	// Override → short TTL.
 	override := 30 * time.Minute
-	before := time.Now().Unix()
+	beforeSec := time.Now().Unix()
 	ck, err := rt.SealAllowlistCookie(req, "explicit-short", &override)
 	require.NoError(t, err)
 	require.NotNil(t, ck)
-	assert.InDelta(t, before+int64(override.Seconds()), ck.Expiration, 2,
+	assert.InDelta(t, beforeSec+int64(override.Seconds()), ck.Expiration, 2,
 		"override TTL must drive the cookie expiration")
 
 	// No override → runtime default (12h).
-	before = time.Now().Unix()
+	beforeSec = time.Now().Unix()
 	ck, err = rt.SealAllowlistCookie(req, "fallback", nil)
 	require.NoError(t, err)
 	require.NotNil(t, ck)
-	assert.InDelta(t, before+int64((12*time.Hour).Seconds()), ck.Expiration, 2,
+	assert.InDelta(t, beforeSec+int64((12*time.Hour).Seconds()), ck.Expiration, 2,
 		"nil override must fall back to runtime cookie_ttl")
 
 	// Zero/negative override → treated as "no override", uses runtime default.
-	before = time.Now().Unix()
+	beforeSec = time.Now().Unix()
 	zero := time.Duration(0)
 	ck, err = rt.SealAllowlistCookie(req, "zero-fallback", &zero)
 	require.NoError(t, err)
 	require.NotNil(t, ck)
-	assert.InDelta(t, before+int64((12*time.Hour).Seconds()), ck.Expiration, 2,
+	assert.InDelta(t, beforeSec+int64((12*time.Hour).Seconds()), ck.Expiration, 2,
 		"non-positive override must fall back to runtime cookie_ttl")
 }
 

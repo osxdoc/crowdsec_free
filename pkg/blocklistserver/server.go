@@ -84,7 +84,7 @@ func (s *Server) Handler() http.Handler {
 
 		// Console enrollment is a cloud feature; answer clearly instead of 404.
 		mux.HandleFunc("POST "+base+"/watchers/enroll", func(w http.ResponseWriter, _ *http.Request) {
-			writeError(w, http.StatusNotImplemented,
+			writeErrorf(w, http.StatusNotImplemented,
 				"console enrollment is not supported: this engine is managed by a self-hosted blocklist server")
 		})
 	}
@@ -147,11 +147,11 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, format string, args ...any) {
+func writeErrorf(w http.ResponseWriter, status int, format string, args ...any) {
 	writeJSON(w, status, errorResponse{Message: fmt.Sprintf(format, args...)})
 }
 
-func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+func (*Server) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
@@ -174,18 +174,18 @@ func (s *Server) withMachine(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		if token == "" {
-			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			writeErrorf(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
 
 		machineID, err := s.signer.Verify(token, s.now())
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "%s", err)
+			writeErrorf(w, http.StatusUnauthorized, "%s", err)
 			return
 		}
 
 		if _, err := s.store.Machine(r.Context(), machineID); err != nil {
-			writeError(w, http.StatusUnauthorized, "unknown machine %q", machineID)
+			writeErrorf(w, http.StatusUnauthorized, "unknown machine %q", machineID)
 			return
 		}
 
@@ -198,7 +198,7 @@ func (s *Server) withMachine(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.adminAllowed(r) {
-			writeError(w, http.StatusUnauthorized, "admin authentication required")
+			writeErrorf(w, http.StatusUnauthorized, "admin authentication required")
 			return
 		}
 
@@ -248,7 +248,7 @@ func isLoopback(r *http.Request) bool {
 	return err == nil && ip.IsLoopback()
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"service": "csblocklistd",
@@ -259,22 +259,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req models.WatcherRegistrationRequest
 
 	if err := s.decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	if req.MachineID == nil || req.Password == nil {
-		writeError(w, http.StatusBadRequest, "machine_id and password are required")
+		writeErrorf(w, http.StatusBadRequest, "machine_id and password are required")
 		return
 	}
 
 	if !machineIDPattern.MatchString(*req.MachineID) {
-		writeError(w, http.StatusBadRequest, "invalid machine_id, expected [a-zA-Z0-9_.@-]{1,64}")
+		writeErrorf(w, http.StatusBadRequest, "invalid machine_id, expected [a-zA-Z0-9_.@-]{1,64}")
 		return
 	}
 
 	if len(*req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		writeErrorf(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
 
@@ -285,7 +285,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !SecureCompare(token, s.cfg.RegistrationToken) {
-			writeError(w, http.StatusUnauthorized, "invalid registration token")
+			writeErrorf(w, http.StatusUnauthorized, "invalid registration token")
 			return
 		}
 	}
@@ -293,18 +293,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		s.log.Errorf("hashing password: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	if err := s.store.RegisterMachine(r.Context(), *req.MachineID, string(hash), clientIP(r)); err != nil {
 		if strings.Contains(err.Error(), "already registered") {
-			writeError(w, http.StatusConflict, "%s", err)
+			writeErrorf(w, http.StatusConflict, "%s", err)
 			return
 		}
 
 		s.log.Errorf("registering machine: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -316,12 +316,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req models.WatcherAuthRequest
 
 	if err := s.decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	if req.MachineID == nil || req.Password == nil {
-		writeError(w, http.StatusBadRequest, "machine_id and password are required")
+		writeErrorf(w, http.StatusBadRequest, "machine_id and password are required")
 		return
 	}
 
@@ -330,12 +330,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Compare against a dummy hash so a missing machine and a bad password
 		// take the same time.
 		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidin"), []byte(*req.Password))
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		writeErrorf(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(machine.PasswordHash), []byte(*req.Password)); err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		writeErrorf(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
@@ -354,7 +354,7 @@ func (s *Server) handleUnregister(w http.ResponseWriter, r *http.Request) {
 	machineID := machineFromContext(r.Context())
 
 	if err := s.store.DeleteMachine(r.Context(), machineID); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -370,14 +370,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.store.ExpireDecisions(ctx); err != nil {
 		s.log.Errorf("expiring decisions: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	revision, err := s.store.CurrentRevision(ctx)
 	if err != nil {
 		s.log.Errorf("reading revision: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -389,7 +389,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	cursor, err := s.store.Cursor(ctx, machineID)
 	if err != nil {
 		s.log.Errorf("reading cursor: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -401,7 +401,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		s.log.Errorf("loading decisions: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -409,7 +409,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		tombstones, err = s.store.TombstonesAfter(ctx, cursor)
 		if err != nil {
 			s.log.Errorf("loading deletions: %s", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeErrorf(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 	}
@@ -429,13 +429,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 // buildStreamResponse groups decisions the way CAPI does: one entry per
 // scenario and scope, with the values in a nested list.
 func buildStreamResponse(decisions []*Decision, tombstones []*Tombstone, scenario string) *modelscapi.GetDecisionsStreamResponse {
-	type groupKey struct {
-		scenario string
-		scope    string
-	}
-
-	groups := map[groupKey]*modelscapi.GetDecisionsStreamResponseNewItem{}
-	order := make([]groupKey, 0)
+	groups := map[string]*modelscapi.GetDecisionsStreamResponseNewItem{}
+	order := make([]string, 0)
 
 	for _, d := range decisions {
 		// Engines only apply ban decisions from the stream; sending others
@@ -444,7 +439,7 @@ func buildStreamResponse(decisions []*Decision, tombstones []*Tombstone, scenari
 			continue
 		}
 
-		key := groupKey{scenario: scenario, scope: d.Scope}
+		key := d.Scope
 
 		group, ok := groups[key]
 		if !ok {
@@ -502,12 +497,12 @@ func (s *Server) handlePushAlerts(w http.ResponseWriter, r *http.Request) {
 	var alerts models.AddAlertsRequest
 
 	if err := s.decodeJSON(w, r, &alerts); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	if len(alerts) > s.cfg.Push.MaxAlertsPerRequest {
-		writeError(w, http.StatusRequestEntityTooLarge, "too many alerts, limit is %d", s.cfg.Push.MaxAlertsPerRequest)
+		writeErrorf(w, http.StatusRequestEntityTooLarge, "too many alerts, limit is %d", s.cfg.Push.MaxAlertsPerRequest)
 		return
 	}
 
@@ -554,12 +549,12 @@ func (s *Server) handlePushSignals(w http.ResponseWriter, r *http.Request) {
 	var signals modelscapi.AddSignalsRequest
 
 	if err := s.decodeJSON(w, r, &signals); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	if len(signals) > s.cfg.Push.MaxAlertsPerRequest {
-		writeError(w, http.StatusRequestEntityTooLarge, "too many signals, limit is %d", s.cfg.Push.MaxAlertsPerRequest)
+		writeErrorf(w, http.StatusRequestEntityTooLarge, "too many signals, limit is %d", s.cfg.Push.MaxAlertsPerRequest)
 		return
 	}
 
@@ -595,9 +590,10 @@ func (s *Server) handlePushSignals(w http.ResponseWriter, r *http.Request) {
 				scenario = signalScenario
 			}
 
-			if err := s.ingest(r.Context(), machineID, origin, scenario,
-				derefString(decision.Scope), derefString(decision.Value), derefString(decision.Duration)); err != nil {
-				s.log.Debugf("skipping pushed signal decision: %s", err)
+			ingestErr := s.ingest(r.Context(), machineID, origin, scenario,
+				derefString(decision.Scope), derefString(decision.Value), derefString(decision.Duration))
+			if ingestErr != nil {
+				s.log.Debugf("skipping pushed signal decision: %s", ingestErr)
 				continue
 			}
 
@@ -713,11 +709,11 @@ func derefString(s *string) string {
 	return *s
 }
 
-func (s *Server) handleAllowlists(w http.ResponseWriter, _ *http.Request) {
+func (*Server) handleAllowlists(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, models.GetAllowlistsResponse{})
 }
 
-func (s *Server) handleNoop(w http.ResponseWriter, r *http.Request) {
+func (*Server) handleNoop(w http.ResponseWriter, r *http.Request) {
 	_, _ = w, r
 	writeJSON(w, http.StatusOK, map[string]string{"message": "ok"})
 }
@@ -726,7 +722,7 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.store.Stats(r.Context())
 	if err != nil {
 		s.log.Errorf("computing stats: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -757,7 +753,7 @@ func (s *Server) handleAdminListDecisions(w http.ResponseWriter, r *http.Request
 	decisions, err := s.store.ListDecisions(r.Context(), filter)
 	if err != nil {
 		s.log.Errorf("listing decisions: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -776,7 +772,7 @@ func (s *Server) handleAdminCreateDecision(w http.ResponseWriter, r *http.Reques
 	var req adminDecisionRequest
 
 	if err := s.decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
@@ -786,13 +782,13 @@ func (s *Server) handleAdminCreateDecision(w http.ResponseWriter, r *http.Reques
 
 	scope, value, err := normalizeScopeValue(req.Scope, req.Value)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	until, duration, err := s.expiry(req.Duration)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
@@ -817,7 +813,7 @@ func (s *Server) handleAdminCreateDecision(w http.ResponseWriter, r *http.Reques
 
 	if err := s.store.UpsertDecision(r.Context(), decision); err != nil {
 		s.log.Errorf("creating decision: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -829,18 +825,18 @@ func (s *Server) handleAdminCreateDecision(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleAdminDeleteDecision(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid decision id")
+		writeErrorf(w, http.StatusBadRequest, "invalid decision id")
 		return
 	}
 
 	if err := s.store.DeleteDecision(r.Context(), id); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "decision not found")
+			writeErrorf(w, http.StatusNotFound, "decision not found")
 			return
 		}
 
 		s.log.Errorf("deleting decision: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -851,7 +847,7 @@ func (s *Server) handleAdminListMachines(w http.ResponseWriter, r *http.Request)
 	machines, err := s.store.ListMachines(r.Context())
 	if err != nil {
 		s.log.Errorf("listing machines: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -875,13 +871,13 @@ func (s *Server) handleAdminListMachines(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleAdminDeleteMachine(w http.ResponseWriter, r *http.Request) {
 	machineID := r.PathValue("id")
 	if machineID == "" {
-		writeError(w, http.StatusBadRequest, "invalid machine id")
+		writeErrorf(w, http.StatusBadRequest, "invalid machine id")
 		return
 	}
 
 	if err := s.store.DeleteMachine(r.Context(), machineID); err != nil {
 		s.log.Errorf("deleting machine: %s", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorf(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 

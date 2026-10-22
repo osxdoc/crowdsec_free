@@ -1131,15 +1131,17 @@ func (wc *AppsecConfig) Build(ctx context.Context, hub *cwhub.Hub) (*AppsecRunti
 	}
 
 	if wc.InBand != nil {
-		if ret.InBandHooks, err = buildPhaseHooks(ctx, "inband",
-			wc.InBand.PreEval, wc.InBand.PostEval, wc.InBand.OnMatch, patcher); err != nil {
+		ret.InBandHooks, err = buildPhaseHooks(ctx, "inband",
+			wc.InBand.PreEval, wc.InBand.PostEval, wc.InBand.OnMatch, patcher)
+		if err != nil {
 			return nil, err
 		}
 	}
 
 	if wc.OutOfBand != nil {
-		if ret.OutOfBandHooks, err = buildPhaseHooks(ctx, "outofband",
-			wc.OutOfBand.PreEval, wc.OutOfBand.PostEval, wc.OutOfBand.OnMatch, patcher); err != nil {
+		ret.OutOfBandHooks, err = buildPhaseHooks(ctx, "outofband",
+			wc.OutOfBand.PreEval, wc.OutOfBand.PostEval, wc.OutOfBand.OnMatch, patcher)
+		if err != nil {
 			return nil, err
 		}
 

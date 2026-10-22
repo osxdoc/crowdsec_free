@@ -1,6 +1,7 @@
 package blocklistserver
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 func ParseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, fmt.Errorf("empty duration")
+		return 0, errors.New("empty duration")
 	}
 
 	if d, err := time.ParseDuration(s); err == nil {
@@ -26,7 +27,7 @@ func ParseDuration(s string) (time.Duration, error) {
 	unit := s[len(s)-1]
 	number := s[:len(s)-1]
 
-	multiplier := time.Duration(0)
+	var multiplier time.Duration
 
 	switch unit {
 	case 'd':

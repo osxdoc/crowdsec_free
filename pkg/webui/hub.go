@@ -226,7 +226,7 @@ func (s *Server) handleHub(w http.ResponseWriter, r *http.Request) {
 
 	entries, updated, err := s.readHubIndex()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "%s", err)
+		writeErrorf(w, http.StatusInternalServerError, "%s", err)
 		return
 	}
 
@@ -493,13 +493,13 @@ func (s *Server) handleHubAction(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req hubActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body: %s", err)
+			writeErrorf(w, http.StatusBadRequest, "invalid request body: %s", err)
 			return
 		}
 
 		args, timeout, err := s.hubActionArgs(action, req)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "%s", err)
+			writeErrorf(w, http.StatusBadRequest, "%s", err)
 			return
 		}
 
@@ -512,7 +512,7 @@ func (s *Server) handleHubAction(action string) http.HandlerFunc {
 		output, err := s.runCscli(ctx, args...)
 		if err != nil {
 			s.log.Errorf("hub %s failed: %s: %s", action, err, output)
-			writeError(w, http.StatusInternalServerError, "%s: %s", err, output)
+			writeErrorf(w, http.StatusInternalServerError, "%s: %s", err, output)
 			return
 		}
 

@@ -39,7 +39,7 @@ func main() {
 	flag.Parse()
 
 	if printVer {
-		fmt.Printf("cswebui %s\n", version)
+		fmt.Fprintf(os.Stdout, "cswebui %s\n", version)
 		return
 	}
 
@@ -147,7 +147,7 @@ func printPasswordHash(password string) error {
 		return err
 	}
 
-	fmt.Println(hash)
+	fmt.Fprintln(os.Stdout, hash)
 
 	return nil
 }

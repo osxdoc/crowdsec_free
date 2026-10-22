@@ -39,27 +39,30 @@ func main() {
 	flag.StringVar(&registerTok, "registration-token", "", "override the registration token")
 
 	flag.Parse()
+	os.Exit(run(configPath, listen, dbPath, logLevel, printVer, genToken, adminToken, registerTok))
+}
 
+func run(configPath, listen, dbPath, logLevel string, printVer, genToken bool, adminToken, registerTok string) int {
 	if printVer {
-		fmt.Printf("csblocklistd %s\n", version)
-		return
+		fmt.Fprintf(os.Stdout, "csblocklistd %s\n", version)
+		return 0
 	}
 
 	if genToken {
 		token, err := blocklistserver.GenerateToken()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "could not generate token: %s\n", err)
-			os.Exit(1)
+			return 1
 		}
 
-		fmt.Println(token)
-		return
+		fmt.Fprintln(os.Stdout, token)
+		return 0
 	}
 
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid log level %q: %s\n", logLevel, err)
-		os.Exit(1)
+		return 1
 	}
 
 	logger := logrus.New()
@@ -69,7 +72,7 @@ func main() {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if listen != "" {
@@ -91,14 +94,14 @@ func main() {
 	store, err := blocklistserver.OpenStore(cfg.DBPath)
 	if err != nil {
 		logger.Errorf("opening database: %s", err)
-		os.Exit(1)
+		return 1
 	}
-	defer store.Close() //nolint:errcheck
+	defer store.Close()
 
 	server, err := blocklistserver.NewServer(cfg, store, logger)
 	if err != nil {
 		logger.Errorf("building server: %s", err)
-		os.Exit(1)
+		return 1
 	}
 
 	httpServer := &http.Server{
@@ -136,7 +139,7 @@ func main() {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("server error: %s", err)
-			os.Exit(1)
+			return 1
 		}
 	}
 
@@ -146,6 +149,7 @@ func main() {
 	if err := httpServer.Shutdown(ctx); err != nil {
 		logger.Errorf("graceful shutdown failed: %s", err)
 	}
+	return 0
 }
 
 func loadConfig(path string) (*blocklistserver.Config, error) {

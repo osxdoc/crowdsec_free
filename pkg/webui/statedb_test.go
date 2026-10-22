@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -151,7 +150,7 @@ func newTestStateStore(t *testing.T) *StateStore {
 func TestStateStoreMachines(t *testing.T) {
 	store := newTestStateStore(t)
 
-	machines, err := store.Machines(context.Background())
+	machines, err := store.Machines(t.Context())
 	require.NoError(t, err)
 	require.Len(t, machines, 2)
 
@@ -171,7 +170,7 @@ func TestStateStoreMachines(t *testing.T) {
 func TestStateStoreBouncers(t *testing.T) {
 	store := newTestStateStore(t)
 
-	bouncers, err := store.Bouncers(context.Background())
+	bouncers, err := store.Bouncers(t.Context())
 	require.NoError(t, err)
 	require.Len(t, bouncers, 1)
 	require.Equal(t, "fw-1", bouncers[0].Name)
@@ -183,7 +182,7 @@ func TestStateStoreBouncers(t *testing.T) {
 func TestStateStoreAlertStats(t *testing.T) {
 	store := newTestStateStore(t)
 
-	stats, err := store.AlertStats(context.Background(), time.Now().Add(-24*time.Hour))
+	stats, err := store.AlertStats(t.Context(), time.Now().Add(-24*time.Hour))
 	require.NoError(t, err)
 
 	require.Equal(t, 2, stats.Total)
@@ -219,7 +218,7 @@ func TestStateStoreAlertStats(t *testing.T) {
 func TestStateStoreDecisionStats(t *testing.T) {
 	store := newTestStateStore(t)
 
-	stats, err := store.DecisionStats(context.Background())
+	stats, err := store.DecisionStats(t.Context())
 	require.NoError(t, err)
 
 	// The expired decision is excluded.
@@ -234,7 +233,7 @@ func TestDatabasePathResolution(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.Engine.ConfigDir = dir
-	require.Equal(t, "", cfg.DatabasePath())
+	require.Empty(t, cfg.DatabasePath())
 
 	engineConfig := "db_config:\n  type: sqlite\n  db_path: /var/lib/crowdsec/data/crowdsec.db\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(engineConfig), 0o600))
@@ -248,5 +247,5 @@ func TestDatabasePathResolution(t *testing.T) {
 	cfg2.Data.DBPath = ""
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
 		[]byte(fmt.Sprintf("db_config:\n  type: mysql\n  db_path: %s\n", "/x")), 0o600))
-	require.Equal(t, "", cfg2.DatabasePath())
+	require.Empty(t, cfg2.DatabasePath())
 }

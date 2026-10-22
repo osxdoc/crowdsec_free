@@ -92,7 +92,8 @@ func (s *Source) Stream(ctx context.Context, out chan pipeline.Event) error {
 		}),
 	)
 	inf := f.Core().V1().Pods().Informer()
-	if err := inf.SetWatchErrorHandler(func(_ *cache.Reflector, watchErr error) {
+
+	handlerErr := inf.SetWatchErrorHandler(func(_ *cache.Reflector, watchErr error) {
 		fields := log.Fields{
 			"namespace": s.config.Namespace,
 			"selector":  s.config.Selector,
@@ -108,8 +109,9 @@ func (s *Source) Stream(ctx context.Context, out chan pipeline.Event) error {
 			return
 		}
 		s.logger.WithFields(fields).Warn("kubernetes informer watch error")
-	}); err != nil {
-		return fmt.Errorf("while setting watch error handler for namespace=%q selector=%q: %w", s.config.Namespace, s.config.Selector, err)
+	})
+	if handlerErr != nil {
+		return fmt.Errorf("while setting watch error handler for namespace=%q selector=%q: %w", s.config.Namespace, s.config.Selector, handlerErr)
 	}
 
 	// We ignore the ResourceEventHandlerRegistration returned by

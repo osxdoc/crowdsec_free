@@ -20,9 +20,10 @@ const defaultPruneDuration = 10 * time.Minute
 
 func (cli *cliMachines) prune(ctx context.Context, duration time.Duration, notValidOnly bool, force bool) error {
 	if duration < 2*time.Minute && !notValidOnly {
-		if yes, err := ask.YesNo(
+		yes, err := ask.YesNo(
 			"The duration you provided is less than 2 minutes. "+
-				"This can break installations if the machines are only temporarily disconnected. Continue?", false); err != nil {
+				"This can break installations if the machines are only temporarily disconnected. Continue?", false)
+		if err != nil {
 			return err
 		} else if !yes {
 			fmt.Fprintln(os.Stdout, "User aborted prune. No changes were made.")
@@ -49,9 +50,10 @@ func (cli *cliMachines) prune(ctx context.Context, duration time.Duration, notVa
 	cli.listHuman(color.Output, machines)
 
 	if !force {
-		if yes, err := ask.YesNo(
+		yes, err := ask.YesNo(
 			"You are about to PERMANENTLY remove the above machines from the database. "+
-				"These will NOT be recoverable. Continue?", false); err != nil {
+				"These will NOT be recoverable. Continue?", false)
+		if err != nil {
 			return err
 		} else if !yes {
 			fmt.Fprintln(os.Stdout, "User aborted prune. No changes were made.")

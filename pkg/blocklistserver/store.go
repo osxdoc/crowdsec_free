@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // Register the SQLite driver for database/sql.
 )
 
 // ErrNotFound is returned when a row does not exist.
@@ -120,12 +120,12 @@ func OpenStore(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	if err := db.Ping(); err != nil {
-		db.Close() //nolint:errcheck
+		db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close() //nolint:errcheck
+		db.Close()
 		return nil, fmt.Errorf("migrating %s: %w", path, err)
 	}
 
@@ -141,7 +141,7 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
-func scanDecision(row interface{ Scan(...any) error }) (*Decision, error) {
+func scanDecision(row interface{ Scan(dest ...any) error }) (*Decision, error) {
 	var (
 		d         Decision
 		createdAt string
@@ -320,7 +320,7 @@ func (s *Store) UpsertDecision(ctx context.Context, d *Decision) error {
 		d.CreatedAt = time.Now().UTC()
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	_, upsertErr := tx.ExecContext(ctx, `
 		INSERT INTO decisions (value, scope, type, duration, scenario, origin, source, machine_id, created_at, until, revision, deleted)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
 		ON CONFLICT (value, scope) WHERE deleted = 0 DO UPDATE SET
@@ -333,13 +333,15 @@ func (s *Store) UpsertDecision(ctx context.Context, d *Decision) error {
 			until = excluded.until,
 			revision = excluded.revision`,
 		d.Value, d.Scope, d.Type, d.Duration, d.Scenario, d.Origin, d.Source, d.MachineID,
-		nowUTC(), nullableTime(d.Until), rev); err != nil {
-		return fmt.Errorf("upserting decision: %w", err)
+		nowUTC(), nullableTime(d.Until), rev)
+	if upsertErr != nil {
+		return fmt.Errorf("upserting decision: %w", upsertErr)
 	}
 
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM decisions WHERE value = ? AND scope = ? AND deleted = 0`, d.Value, d.Scope).Scan(&d.ID); err != nil {
-		return fmt.Errorf("reading decision id: %w", err)
+	lookupErr := tx.QueryRowContext(ctx,
+		`SELECT id FROM decisions WHERE value = ? AND scope = ? AND deleted = 0`, d.Value, d.Scope).Scan(&d.ID)
+	if lookupErr != nil {
+		return fmt.Errorf("reading decision id: %w", lookupErr)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -604,6 +606,10 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 		}
 
 		stats.ByScenario[scenario] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating scenario counts: %w", err)
 	}
 
 	rows2, err := s.db.QueryContext(ctx,

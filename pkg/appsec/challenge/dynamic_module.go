@@ -142,12 +142,15 @@ func (c *ChallengeRuntime) dynamicModuleForEpoch(ctx context.Context, epoch int6
 			return nil, fmt.Errorf("parse dynamic module template: %w", err)
 		}
 		var rendered strings.Builder
-		if err := tmpl.Execute(&rendered, map[string]interface{}{
+
+		renderErr := tmpl.Execute(&rendered, map[string]interface{}{
 			"Key":   hex.EncodeToString(signKey),
 			"Epoch": epoch,
-		}); err != nil {
-			return nil, fmt.Errorf("render dynamic module template: %w", err)
+		})
+		if renderErr != nil {
+			return nil, fmt.Errorf("render dynamic module template: %w", renderErr)
 		}
+
 		input := rendered.String()
 		inputSize := len(input)
 

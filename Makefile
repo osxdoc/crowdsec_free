@@ -382,17 +382,22 @@ testcover: check_gotestsum testenv  ## Run unit tests with coverage report
 # The quotes in the next command are required for PowerShell
 	gotestsum --format $(GOTESTSUM_FORMAT) --format-hide-empty-pkg -- -covermode=atomic "-coverprofile=coverage.out" -coverpkg=./... "-tags=$(GO_TAGS)" ./...
 
+GOLANGCI_LINT_VERSION := 2.15.0
+
 .PHONY: check_golangci-lint
 check_golangci-lint:
 ifeq ($(OS),Windows_NT)
 	@where golangci-lint >nul || (echo "Error: golangci-lint is not installed. Install it from https://github.com/golangci/golangci-lint" && exit 1)
+	@if ((golangci-lint version --short) -ne "$(GOLANGCI_LINT_VERSION)") { throw "Install golangci-lint v$(GOLANGCI_LINT_VERSION), matching CI" }
 else
 	@command -v golangci-lint > /dev/null 2>&1 || (echo "Error: golangci-lint is not installed. Install it from https://github.com/golangci/golangci-lint" && exit 1)
+	@test "$$(golangci-lint version --short)" = "$(GOLANGCI_LINT_VERSION)" || (echo "Error: install golangci-lint v$(GOLANGCI_LINT_VERSION), matching CI" && exit 1)
 endif
 
 .PHONY: lint
 lint: check_golangci-lint  ## Run go linters for all platforms.
-	GOOS=linux   golangci-lint run
+# Pure Go SQLite also works when cross-linting without a C cross-compiler.
+	GOOS=linux   golangci-lint run --build-tags=sqlite_modernc
 	GOOS=windows golangci-lint run --build-tags=windows,sqlite_modernc
 	GOOS=freebsd golangci-lint run --build-tags=freebsd,sqlite_modernc
 

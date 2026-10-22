@@ -60,9 +60,10 @@ func (s *RequestScore) Add(points int, name string, category ...string) int {
 	}
 
 	// if the detection already exists, increment its score
-	if i := slices.IndexFunc(s.detections, func(d detection) bool {
+	i := slices.IndexFunc(s.detections, func(d detection) bool {
 		return d.name == name && d.category == cat
-	}); i >= 0 {
+	})
+	if i >= 0 {
 		s.detections[i].score += points
 	} else {
 		s.detections = append(s.detections, detection{name: name, category: cat, score: points})

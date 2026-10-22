@@ -429,7 +429,7 @@ type LogValue struct {
 	Line string
 }
 
-func (l *LogValue) MarshalJSON() ([]byte, error) {
+func (l LogValue) MarshalJSON() ([]byte, error) {
 	line, err := json.Marshal(l.Line)
 	if err != nil {
 		return nil, err

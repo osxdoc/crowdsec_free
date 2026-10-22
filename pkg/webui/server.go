@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -201,7 +200,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // securityHeaders hardens the UI a little; the app ships no external assets.
-func (s *Server) securityHeaders(next http.Handler) http.Handler {
+func (*Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -262,7 +261,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, format string, args ...any) {
+func writeErrorf(w http.ResponseWriter, status int, format string, args ...any) {
 	writeJSON(w, status, errorResponse{Message: fmt.Sprintf(format, args...)})
 }
 
@@ -280,14 +279,14 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, csrf, ok := s.sessions.verify(r)
 		if !ok {
-			writeError(w, http.StatusUnauthorized, "authentication required")
+			writeErrorf(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
 
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			header := r.Header.Get("X-CSRF-Token")
 			if subtle.ConstantTimeCompare([]byte(header), []byte(csrf)) != 1 {
-				writeError(w, http.StatusForbidden, "invalid CSRF token")
+				writeErrorf(w, http.StatusForbidden, "invalid CSRF token")
 				return
 			}
 		}
@@ -318,14 +317,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 
 	if err := decodeBody(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	token, csrf, err := s.sessions.login(req.Username, req.Password, clientIP(r))
 	if err != nil {
 		s.log.Warnf("failed login for %q from %s", req.Username, clientIP(r))
-		writeError(w, http.StatusUnauthorized, "%s", err)
+		writeErrorf(w, http.StatusUnauthorized, "%s", err)
 		return
 	}
 
@@ -356,7 +355,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveSPA serves the embedded single page application.
-func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
+func (*Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 	staticFS, err := fs.Sub(assetsFS, "assets")
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -370,7 +369,7 @@ func (s *Server) serveSPA(w http.ResponseWriter, r *http.Request) {
 
 	// Unknown API routes must 404 instead of returning the SPA shell.
 	if strings.HasPrefix(path, "api/") {
-		writeError(w, http.StatusNotFound, "no such endpoint")
+		writeErrorf(w, http.StatusNotFound, "no such endpoint")
 		return
 	}
 
@@ -416,10 +415,4 @@ func splitHostPort(addr string) (string, string, error) {
 	}
 
 	return strings.Trim(addr[:idx], "[]"), addr[idx+1:], nil
-}
-
-// drainBody consumes and closes a request body.
-func drainBody(r *http.Request) {
-	_, _ = io.Copy(io.Discard, r.Body)
-	_ = r.Body.Close()
 }

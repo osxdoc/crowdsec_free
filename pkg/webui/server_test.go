@@ -137,7 +137,12 @@ func newTestUIWithLAPI(t *testing.T, mutate func(*Config), lapiURL string) *test
 	}
 }
 
-func (ui *testUI) do(t *testing.T, method, path string, body any, headers map[string]string) (*http.Response, []byte) {
+type testResponse struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func (ui *testUI) do(t *testing.T, method, path string, body any, headers map[string]string) (testResponse, []byte) {
 	t.Helper()
 
 	var reader io.Reader
@@ -168,7 +173,7 @@ func (ui *testUI) do(t *testing.T, method, path string, body any, headers map[st
 	payload, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	return resp, payload
+	return testResponse{StatusCode: resp.StatusCode, Header: resp.Header}, payload
 }
 
 func (ui *testUI) login(t *testing.T) {

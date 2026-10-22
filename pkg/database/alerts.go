@@ -173,15 +173,17 @@ func (c *Client) CreateOrUpdateAlert(ctx context.Context, machineID string, aler
 	// create missing decisions in batches
 
 	decisions := make([]*ent.Decision, 0, len(decisionBuilders))
-	if err := slicetools.Batch(ctx, decisionBuilders, c.decisionBulkSize, func(ctx context.Context, b []*ent.DecisionCreate) error {
+
+	createErr := slicetools.Batch(ctx, decisionBuilders, c.decisionBulkSize, func(ctx context.Context, b []*ent.DecisionCreate) error {
 		ret, err := c.Ent.Decision.CreateBulk(b...).Save(ctx)
 		if err != nil {
 			return fmt.Errorf("creating alert decisions: %w", err)
 		}
 		decisions = append(decisions, ret...)
 		return nil
-	}); err != nil {
-		return "", err
+	})
+	if createErr != nil {
+		return "", createErr
 	}
 
 	return "", nil
@@ -326,9 +328,7 @@ func (c *Client) UpdateCommunityBlocklist(ctx context.Context, alertItem *models
 		valueList = append(valueList, *decisionItem.Value)
 	}
 
-	// Delete older decisions from capi
-
-	if err := slicetools.Batch(ctx, valueList, c.decisionBulkSize, func(ctx context.Context, vals []string) error {
+	deleteErr := slicetools.Batch(ctx, valueList, c.decisionBulkSize, func(ctx context.Context, vals []string) error {
 		deletedDecisions, err := txClient.Decision.Delete().
 			Where(decision.And(
 				decision.OriginEQ(decOrigin),
@@ -340,21 +340,21 @@ func (c *Client) UpdateCommunityBlocklist(ctx context.Context, alertItem *models
 		}
 		deleted += deletedDecisions
 		return nil
-	}); err != nil {
-		return 0, 0, 0, rollbackOnError(txClient, err, "deleting older community blocklist decisions")
+	})
+	if deleteErr != nil {
+		return 0, 0, 0, rollbackOnError(txClient, deleteErr, "deleting older community blocklist decisions")
 	}
 
-	// Insert new decisions
-
-	if err := slicetools.Batch(ctx, decisionBuilders, c.decisionBulkSize, func(ctx context.Context, b []*ent.DecisionCreate) error {
+	insertErr := slicetools.Batch(ctx, decisionBuilders, c.decisionBulkSize, func(ctx context.Context, b []*ent.DecisionCreate) error {
 		insertedDecisions, err := txClient.Decision.CreateBulk(b...).Save(ctx)
 		if err != nil {
 			return err
 		}
 		inserted += len(insertedDecisions)
 		return nil
-	}); err != nil {
-		return 0, 0, 0, rollbackOnError(txClient, err, "bulk creating decisions")
+	})
+	if insertErr != nil {
+		return 0, 0, 0, rollbackOnError(txClient, insertErr, "bulk creating decisions")
 	}
 
 	log.Debugf("deleted %d decisions for %s vs %s", deleted, decOrigin, *alertItem.Decisions[0].Origin)
@@ -544,15 +544,17 @@ func buildMetaCreates(ctx context.Context, logger log.FieldLogger, client *ent.C
 
 func (c *Client) buildDecisions(ctx context.Context, logger log.FieldLogger, client *ent.Client, alertItem *models.Alert, stopAtTime time.Time) ([]*ent.Decision, int, error) {
 	decisions := []*ent.Decision{}
-	if err := slicetools.Batch(ctx, alertItem.Decisions, c.decisionBulkSize, func(ctx context.Context, part []*models.Decision) error {
+
+	batchErr := slicetools.Batch(ctx, alertItem.Decisions, c.decisionBulkSize, func(ctx context.Context, part []*models.Decision) error {
 		ret, err := c.createDecisionBatch(ctx, client, *alertItem.Simulated, stopAtTime, part)
 		if err != nil {
 			return fmt.Errorf("creating alert decisions: %w", err)
 		}
 		decisions = append(decisions, ret...)
 		return nil
-	}); err != nil {
-		return nil, 0, err
+	})
+	if batchErr != nil {
+		return nil, 0, batchErr
 	}
 
 	discarded := len(alertItem.Decisions) - len(decisions)
@@ -613,13 +615,14 @@ func (c *Client) saveAlerts(ctx context.Context, client *ent.Client, batch []ale
 			continue
 		}
 
-		if err := slicetools.Batch(ctx, d, c.decisionBulkSize, func(ctx context.Context, d2 []*ent.Decision) error {
+		attachErr := slicetools.Batch(ctx, d, c.decisionBulkSize, func(ctx context.Context, d2 []*ent.Decision) error {
 			return retryOnBusy(func() error {
 				_, err := client.Alert.Update().Where(alert.IDEQ(a.ID)).AddDecisions(d2...).Save(ctx)
 				return err
 			})
-		}); err != nil {
-			return nil, fmt.Errorf("attach decisions to alert %d: %w", a.ID, err)
+		})
+		if attachErr != nil {
+			return nil, fmt.Errorf("attach decisions to alert %d: %w", a.ID, attachErr)
 		}
 	}
 
@@ -744,15 +747,17 @@ func (c *Client) CreateAlert(ctx context.Context, machineID string, alertList []
 	c.Log.Debugf("writing %d items", len(alertList))
 
 	alertIDs := []string{}
-	if err := slicetools.Batch(ctx, alertList, alertCreateBulkSize, func(ctx context.Context, part []*models.Alert) error {
+
+	batchErr := slicetools.Batch(ctx, alertList, alertCreateBulkSize, func(ctx context.Context, part []*models.Alert) error {
 		ids, err := c.createAlertBatch(ctx, machineID, owner, part)
 		if err != nil {
 			return fmt.Errorf("machine %q: %w", machineID, err)
 		}
 		alertIDs = append(alertIDs, ids...)
 		return nil
-	}); err != nil {
-		return nil, err
+	})
+	if batchErr != nil {
+		return nil, batchErr
 	}
 
 	if owner != nil {

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // Register the SQLite driver for database/sql.
 )
 
 // StateStore gives read-only access to the LAPI database. It is optional: when
@@ -96,7 +96,7 @@ func OpenStateStore(path string) (*StateStore, error) {
 	db.SetMaxOpenConns(1)
 
 	if err := db.Ping(); err != nil {
-		db.Close() //nolint:errcheck
+		db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 
@@ -136,10 +136,6 @@ func (c *Config) DatabasePath() string {
 	}
 
 	return engineConfig.DBConfig.DBPath
-}
-
-func sqliteTime(t time.Time) string {
-	return t.UTC().Format("2006-01-02 15:04:05")
 }
 
 func parseSQLiteTime(raw sql.NullString) *time.Time {
@@ -188,8 +184,9 @@ func (s *StateStore) Machines(ctx context.Context) ([]machineInfo, error) {
 			createdAt sql.NullString
 		)
 
-		if err := rows.Scan(&m.MachineID, &m.Version, &m.OSName, &m.OSFamily, &m.OSVersion,
-			&m.Scenarios, &lastSeen, &m.Validated, &m.IPAddress, &createdAt); err != nil {
+		err := rows.Scan(&m.MachineID, &m.Version, &m.OSName, &m.OSFamily, &m.OSVersion,
+			&m.Scenarios, &lastSeen, &m.Validated, &m.IPAddress, &createdAt)
+		if err != nil {
 			return nil, fmt.Errorf("scanning machine: %w", err)
 		}
 
@@ -226,8 +223,9 @@ func (s *StateStore) Bouncers(ctx context.Context) ([]bouncerInfo, error) {
 			createdAt sql.NullString
 		)
 
-		if err := rows.Scan(&b.Name, &b.Type, &b.Version, &b.OSName, &b.OSVersion,
-			&b.IPAddress, &lastPull, &b.Revoked, &createdAt); err != nil {
+		err := rows.Scan(&b.Name, &b.Type, &b.Version, &b.OSName, &b.OSVersion,
+			&b.IPAddress, &lastPull, &b.Revoked, &createdAt)
+		if err != nil {
 			return nil, fmt.Errorf("scanning bouncer: %w", err)
 		}
 
@@ -274,10 +272,11 @@ func queryCounts(ctx context.Context, db *sql.DB, query string, args ...any) (ma
 func (s *StateStore) AlertStats(ctx context.Context, since time.Time) (*alertDBStats, error) {
 	stats := &alertDBStats{}
 
-	if err := s.db.QueryRowContext(ctx, `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(events_count), 0), COUNT(DISTINCT source_ip)
 		FROM alerts WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ?`, since.Unix()).
-		Scan(&stats.Total, &stats.Events, &stats.UniqueSources); err != nil {
+		Scan(&stats.Total, &stats.Events, &stats.UniqueSources)
+	if err != nil {
 		return nil, fmt.Errorf("counting alerts: %w", err)
 	}
 
@@ -422,9 +421,10 @@ func (s *StateStore) DecisionStats(ctx context.Context) (*decisionDBStats, error
 
 	active := `until IS NULL OR CAST(strftime('%s', until) AS INTEGER) > CAST(strftime('%s', 'now') AS INTEGER)`
 
-	if err := s.db.QueryRowContext(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(simulated), 0) FROM decisions WHERE `+active).
-		Scan(&stats.Total, &stats.Simulated); err != nil {
+		Scan(&stats.Total, &stats.Simulated)
+	if err != nil {
 		return nil, fmt.Errorf("counting decisions: %w", err)
 	}
 

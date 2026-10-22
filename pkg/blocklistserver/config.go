@@ -51,8 +51,8 @@ type Config struct {
 
 	Push PushConfig `yaml:"push"`
 
-	// tokenTTL is the parsed form of TokenTTL.
-	tokenTTL time.Duration
+	// parsedTokenTTL is the parsed form of TokenTTL.
+	parsedTokenTTL time.Duration
 }
 
 // PushConfig controls which alerts pushed by engines end up in the shared
@@ -119,7 +119,7 @@ func (c *Config) SetDefaults() error {
 		return fmt.Errorf("token_ttl must be positive, got %s", ttl)
 	}
 
-	c.tokenTTL = ttl
+	c.parsedTokenTTL = ttl
 
 	if len(c.Push.AcceptOrigins) == 0 {
 		c.Push.AcceptOrigins = []string{"cscli"}
@@ -150,11 +150,11 @@ func (c *Config) SetDefaults() error {
 
 // TokenTTLDuration returns the parsed token TTL.
 func (c *Config) TokenTTLDuration() time.Duration {
-	if c.tokenTTL == 0 {
+	if c.parsedTokenTTL == 0 {
 		return DefaultTokenTTL
 	}
 
-	return c.tokenTTL
+	return c.parsedTokenTTL
 }
 
 // AcceptsOrigin reports whether decisions with the given origin are pushed

@@ -662,7 +662,7 @@ func (c *ChallengeRuntime) GetChallengePage(ctx context.Context, userAgent strin
 
 	var renderedPage strings.Builder
 
-	if err := c.htmlTpl.Execute(&renderedPage, map[string]interface{}{
+	renderErr := c.htmlTpl.Execute(&renderedPage, map[string]interface{}{
 		"JSChallenge":       challengeCode,
 		"DynamicModule":     dynamicModule,
 		"FPScannerPath":     ChallengeFPScannerPath,
@@ -674,9 +674,11 @@ func (c *ChallengeRuntime) GetChallengePage(ctx context.Context, userAgent strin
 		"PowMAC":            powMAC,
 		"Timestamp":         ts,
 		"R":                 r,
-	}); err != nil {
-		return "", fmt.Errorf("render challenge page: %w", err)
+	})
+	if renderErr != nil {
+		return "", fmt.Errorf("render challenge page: %w", renderErr)
 	}
+
 	return renderedPage.String(), nil
 }
 
@@ -798,15 +800,15 @@ func (c *ChallengeRuntime) ValidateChallengeResponse(request *http.Request, body
 	// Seal under the long-lived master cookie key. The embedded not_after makes
 	// the server validity window exactly c.cookieTTL (independent of key
 	// rotation); the browser Max-Age below matches so both expire together.
-	notAfter := time.Now().Add(c.cookieTTL).Unix()
-	cookieValue, err := sealCookieV0(envelope, c.keys.MasterCookieKey(), notAfter, 0, "", []byte(request.UserAgent()), c.maxCookieLen)
+	notAfterSec := time.Now().Add(c.cookieTTL).Unix()
+	cookieValue, err := sealCookieV0(envelope, c.keys.MasterCookieKey(), notAfterSec, 0, "", []byte(request.UserAgent()), c.maxCookieLen)
 
 	// If the cookie is too large, try to drop custom detection as a last chance to fit it within the size limit.
 	if errors.Is(err, ErrCookieTooLarge) && envelope.GetFingerprint().GetCustom() != nil {
 		c.logCustomOverflow(&fpData)
 
 		envelope.Fingerprint.Custom = nil
-		cookieValue, err = sealCookieV0(envelope, c.keys.MasterCookieKey(), notAfter, 0, "", []byte(request.UserAgent()), c.maxCookieLen)
+		cookieValue, err = sealCookieV0(envelope, c.keys.MasterCookieKey(), notAfterSec, 0, "", []byte(request.UserAgent()), c.maxCookieLen)
 	}
 
 	if err != nil {
@@ -831,8 +833,8 @@ func (c *ChallengeRuntime) SealAllowlistCookie(request *http.Request, reason str
 		ttl = *ttlOverride
 	}
 
-	notAfter := time.Now().Add(ttl).Unix()
-	cookieValue, err := sealCookieV0(&pb.ChallengeCookie{}, c.keys.MasterCookieKey(), notAfter, cookieFlagAllowlisted, reason, []byte(request.UserAgent()), c.maxCookieLen)
+	notAfterSec := time.Now().Add(ttl).Unix()
+	cookieValue, err := sealCookieV0(&pb.ChallengeCookie{}, c.keys.MasterCookieKey(), notAfterSec, cookieFlagAllowlisted, reason, []byte(request.UserAgent()), c.maxCookieLen)
 	if err != nil {
 		return nil, fmt.Errorf("failed to seal allowlist cookie: %w", err)
 	}

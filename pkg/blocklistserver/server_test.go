@@ -19,10 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func ptr[T any](v T) *T {
-	return &v
-}
-
 func newTestServer(t *testing.T, mutate func(*Config)) (*httptest.Server, *Store) {
 	t.Helper()
 
@@ -53,7 +49,12 @@ func newTestServer(t *testing.T, mutate func(*Config)) (*httptest.Server, *Store
 	return ts, store
 }
 
-func doJSON(t *testing.T, method, url string, body any, token string) (*http.Response, []byte) {
+type testResponse struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func doJSON(t *testing.T, method, url string, body any, token string) (testResponse, []byte) {
 	t.Helper()
 
 	var reader io.Reader
@@ -82,7 +83,7 @@ func doJSON(t *testing.T, method, url string, body any, token string) (*http.Res
 	payload, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	return resp, payload
+	return testResponse{StatusCode: resp.StatusCode, Header: resp.Header}, payload
 }
 
 func registerAndLogin(t *testing.T, baseURL string) string {
@@ -92,14 +93,14 @@ func registerAndLogin(t *testing.T, baseURL string) string {
 
 	resp, body := doJSON(t, http.MethodPost, baseURL+"/v1/watchers",
 		models.WatcherRegistrationRequest{
-			MachineID: ptr("test-machine"),
+			MachineID: new("test-machine"),
 			Password:  &pwd,
 		}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
 
 	resp, body = doJSON(t, http.MethodPost, baseURL+"/v1/watchers/login",
 		models.WatcherAuthRequest{
-			MachineID: ptr("test-machine"),
+			MachineID: new("test-machine"),
 			Password:  &pwd,
 		}, "")
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
@@ -115,14 +116,14 @@ func pushAlert(t *testing.T, baseURL, token, ip, origin string) (int, []byte) {
 	t.Helper()
 
 	alert := &models.Alert{
-		Scenario: ptr("manual"),
+		Scenario: new("manual"),
 		Decisions: []*models.Decision{
 			{
-				Value:    ptr(ip),
-				Scope:    ptr("Ip"),
-				Type:     ptr("ban"),
-				Duration: ptr("4h"),
-				Origin:   ptr(origin),
+				Value:    new(ip),
+				Scope:    new("Ip"),
+				Type:     new("ban"),
+				Duration: new("4h"),
+				Origin:   new(origin),
 			},
 		},
 	}
@@ -154,13 +155,13 @@ func TestRegistrationAndLogin(t *testing.T) {
 		pwd := strfmt.Password("short")
 
 		resp, _ := doJSON(t, http.MethodPost, baseURL+"/v1/watchers",
-			models.WatcherRegistrationRequest{MachineID: ptr("short-pwd"), Password: &pwd}, "")
+			models.WatcherRegistrationRequest{MachineID: new("short-pwd"), Password: &pwd}, "")
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
 	t.Run("duplicate machine is rejected", func(t *testing.T) {
 		pwd := strfmt.Password("supersecret")
-		req := models.WatcherRegistrationRequest{MachineID: ptr("dup-machine"), Password: &pwd}
+		req := models.WatcherRegistrationRequest{MachineID: new("dup-machine"), Password: &pwd}
 
 		resp, _ := doJSON(t, http.MethodPost, baseURL+"/v1/watchers", req, "")
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -173,13 +174,13 @@ func TestRegistrationAndLogin(t *testing.T) {
 		pwd := strfmt.Password("supersecret")
 
 		resp, _ := doJSON(t, http.MethodPost, baseURL+"/v1/watchers",
-			models.WatcherRegistrationRequest{MachineID: ptr("login-machine"), Password: &pwd}, "")
+			models.WatcherRegistrationRequest{MachineID: new("login-machine"), Password: &pwd}, "")
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 		bad := strfmt.Password("wrong-password")
 
 		resp, _ = doJSON(t, http.MethodPost, baseURL+"/v1/watchers/login",
-			models.WatcherAuthRequest{MachineID: ptr("login-machine"), Password: &bad}, "")
+			models.WatcherAuthRequest{MachineID: new("login-machine"), Password: &bad}, "")
 		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 
@@ -231,11 +232,11 @@ func TestInvalidDecisionsAreSkipped(t *testing.T) {
 	token := registerAndLogin(t, baseURL)
 
 	for _, decision := range []*models.Decision{
-		{Value: ptr("not-an-ip"), Scope: ptr("Ip"), Type: ptr("ban"), Duration: ptr("4h"), Origin: ptr("cscli")},
-		{Value: ptr("1.2.3.4"), Scope: ptr("username"), Type: ptr("ban"), Duration: ptr("4h"), Origin: ptr("cscli")},
-		{Value: ptr("9.9.9.9"), Scope: ptr("Ip"), Type: ptr("ban"), Duration: ptr("4h"), Origin: ptr("crowdsec")},
+		{Value: new("not-an-ip"), Scope: new("Ip"), Type: new("ban"), Duration: new("4h"), Origin: new("cscli")},
+		{Value: new("1.2.3.4"), Scope: new("username"), Type: new("ban"), Duration: new("4h"), Origin: new("cscli")},
+		{Value: new("9.9.9.9"), Scope: new("Ip"), Type: new("ban"), Duration: new("4h"), Origin: new("crowdsec")},
 	} {
-		alert := &models.Alert{Scenario: ptr("manual"), Decisions: []*models.Decision{decision}}
+		alert := &models.Alert{Scenario: new("manual"), Decisions: []*models.Decision{decision}}
 
 		resp, body := doJSON(t, http.MethodPost, baseURL+"/v1/alerts", models.AddAlertsRequest{alert}, token)
 		require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
@@ -307,7 +308,7 @@ func TestAdminWithoutTokenIsLoopbackOnly(t *testing.T) {
 		cfg.AdminToken = ""
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/v1/stats", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/v1/stats", http.NoBody)
 	req.RemoteAddr = "10.1.2.3:5555"
 
 	rec := httptest.NewRecorder()
@@ -328,11 +329,11 @@ func TestRegistrationToken(t *testing.T) {
 	pwd := strfmt.Password("supersecret")
 
 	resp, _ := doJSON(t, http.MethodPost, ts.URL+"/v1/watchers",
-		models.WatcherRegistrationRequest{MachineID: ptr("needs-token"), Password: &pwd}, "")
+		models.WatcherRegistrationRequest{MachineID: new("needs-token"), Password: &pwd}, "")
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 
 	resp, _ = doJSON(t, http.MethodPost, ts.URL+"/v1/watchers",
-		models.WatcherRegistrationRequest{MachineID: ptr("needs-token"), Password: &pwd, RegistrationToken: "enroll-me"}, "")
+		models.WatcherRegistrationRequest{MachineID: new("needs-token"), Password: &pwd, RegistrationToken: "enroll-me"}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
@@ -370,11 +371,11 @@ func TestStreamCursorIsPerMachine(t *testing.T) {
 
 	pwd := strfmt.Password("supersecret")
 	resp, body := doJSON(t, http.MethodPost, baseURL+"/v1/watchers",
-		models.WatcherRegistrationRequest{MachineID: ptr("second-machine"), Password: &pwd}, "")
+		models.WatcherRegistrationRequest{MachineID: new("second-machine"), Password: &pwd}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
 
 	resp, body = doJSON(t, http.MethodPost, baseURL+"/v1/watchers/login",
-		models.WatcherAuthRequest{MachineID: ptr("second-machine"), Password: &pwd}, "")
+		models.WatcherAuthRequest{MachineID: new("second-machine"), Password: &pwd}, "")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var auth models.WatcherAuthResponse
@@ -470,50 +471,50 @@ func TestV3RegistrationAndSignalPush(t *testing.T) {
 	pwd := strfmt.Password("supersecret")
 
 	resp, body := doJSON(t, http.MethodPost, baseURL+"/v3/watchers",
-		models.WatcherRegistrationRequest{MachineID: ptr("engine-v3"), Password: &pwd}, "")
+		models.WatcherRegistrationRequest{MachineID: new("engine-v3"), Password: &pwd}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
 
 	resp, body = doJSON(t, http.MethodPost, baseURL+"/v3/watchers/login",
-		models.WatcherAuthRequest{MachineID: ptr("engine-v3"), Password: &pwd}, "")
+		models.WatcherAuthRequest{MachineID: new("engine-v3"), Password: &pwd}, "")
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 
 	var auth models.WatcherAuthResponse
 	require.NoError(t, json.Unmarshal(body, &auth))
 
 	signal := &modelscapi.AddSignalsRequestItem{
-		Scenario: ptr("manual"),
+		Scenario: new("manual"),
 		Source:   &modelscapi.AddSignalsRequestItemSource{IP: "1.2.3.4"},
 		Decisions: modelscapi.AddSignalsRequestItemDecisions{
 			{
-				Value:    ptr("1.2.3.4"),
-				Scope:    ptr("Ip"),
-				Type:     ptr("ban"),
-				Duration: ptr("4h"),
-				Origin:   ptr("cscli"),
+				Value:    new("1.2.3.4"),
+				Scope:    new("Ip"),
+				Type:     new("ban"),
+				Duration: new("4h"),
+				Origin:   new("cscli"),
 			},
 			// Simulated decisions and non-ban types are never shared.
 			{
-				Value:     ptr("5.5.5.5"),
-				Scope:     ptr("Ip"),
-				Type:      ptr("ban"),
-				Duration:  ptr("4h"),
-				Origin:    ptr("cscli"),
+				Value:     new("5.5.5.5"),
+				Scope:     new("Ip"),
+				Type:      new("ban"),
+				Duration:  new("4h"),
+				Origin:    new("cscli"),
 				Simulated: true,
 			},
 			{
-				Value:    ptr("6.6.6.6"),
-				Scope:    ptr("Ip"),
-				Type:     ptr("captcha"),
-				Duration: ptr("4h"),
-				Origin:   ptr("cscli"),
+				Value:    new("6.6.6.6"),
+				Scope:    new("Ip"),
+				Type:     new("captcha"),
+				Duration: new("4h"),
+				Origin:   new("cscli"),
 			},
 			// Origins that are not shared by configuration.
 			{
-				Value:    ptr("7.7.7.7"),
-				Scope:    ptr("Ip"),
-				Type:     ptr("ban"),
-				Duration: ptr("4h"),
-				Origin:   ptr("crowdsec"),
+				Value:    new("7.7.7.7"),
+				Scope:    new("Ip"),
+				Type:     new("ban"),
+				Duration: new("4h"),
+				Origin:   new("crowdsec"),
 			},
 		},
 	}
@@ -545,14 +546,14 @@ func TestServedDurationsAreParseableByEngines(t *testing.T) {
 
 	// Register a second machine through the v3 API.
 	resp, body := doJSON(t, http.MethodPost, baseURL+"/v3/watchers",
-		models.WatcherRegistrationRequest{MachineID: ptr("duration-check"), Password: &pwd}, "")
+		models.WatcherRegistrationRequest{MachineID: new("duration-check"), Password: &pwd}, "")
 	require.Equal(t, http.StatusCreated, resp.StatusCode, string(body))
 
 	signal := &modelscapi.AddSignalsRequestItem{
-		Scenario: ptr("manual"),
+		Scenario: new("manual"),
 		Source:   &modelscapi.AddSignalsRequestItemSource{IP: "1.2.3.4"},
 		Decisions: modelscapi.AddSignalsRequestItemDecisions{
-			{Value: ptr("1.2.3.4"), Scope: ptr("Ip"), Type: ptr("ban"), Duration: ptr("7d"), Origin: ptr("cscli")},
+			{Value: new("1.2.3.4"), Scope: new("Ip"), Type: new("ban"), Duration: new("7d"), Origin: new("cscli")},
 		},
 	}
 

@@ -119,7 +119,7 @@ var knownPlurals = map[string]string{
 	"ip":     "IPs",
 }
 
-func (s *statBouncer) MarshalJSON() ([]byte, error) {
+func (s statBouncer) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.aggOverIPType)
 }
 

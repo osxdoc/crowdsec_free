@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -39,16 +40,7 @@ func (s *Server) resolveConfigPath(name string) (string, error) {
 		return "", errors.New("invalid file name")
 	}
 
-	allowed := false
-
-	for _, candidate := range s.cfg.Files {
-		if candidate == name {
-			allowed = true
-			break
-		}
-	}
-
-	if !allowed {
+	if !slices.Contains(s.cfg.Files, name) {
 		return "", fmt.Errorf("file %q is not editable, add it to the files list in the cswebui config", name)
 	}
 
@@ -99,24 +91,24 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	full, err := s.resolveConfigPath(name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	stat, err := os.Stat(full)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "file %q does not exist", name)
+		writeErrorf(w, http.StatusNotFound, "file %q does not exist", name)
 		return
 	}
 
 	if stat.Size() > maxConfigSize {
-		writeError(w, http.StatusRequestEntityTooLarge, "file %q is larger than %d bytes", name, maxConfigSize)
+		writeErrorf(w, http.StatusRequestEntityTooLarge, "file %q is larger than %d bytes", name, maxConfigSize)
 		return
 	}
 
 	content, err := os.ReadFile(full)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read %q: %s", name, err)
+		writeErrorf(w, http.StatusInternalServerError, "could not read %q: %s", name, err)
 		return
 	}
 
@@ -137,19 +129,19 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 
 	full, err := s.resolveConfigPath(name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	var req updateConfigRequest
 
 	if err := decodeBody(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	if len(req.Content) > maxConfigSize {
-		writeError(w, http.StatusRequestEntityTooLarge, "content is larger than %d bytes", maxConfigSize)
+		writeErrorf(w, http.StatusRequestEntityTooLarge, "content is larger than %d bytes", maxConfigSize)
 		return
 	}
 
@@ -157,14 +149,14 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		var node yaml.Node
 
 		if err := yaml.Unmarshal([]byte(req.Content), &node); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid YAML: %s", err)
+			writeErrorf(w, http.StatusBadRequest, "invalid YAML: %s", err)
 			return
 		}
 	}
 
 	mode := os.FileMode(0o640)
 	if !s.hubMu.TryLock() {
-		writeError(w, http.StatusConflict, "another engine or allowlist operation is in progress")
+		writeErrorf(w, http.StatusConflict, "another engine or allowlist operation is in progress")
 		return
 	}
 	defer s.hubMu.Unlock()
@@ -183,7 +175,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 
 	if err := writeFileAtomic(full, []byte(req.Content), mode); err != nil {
 		s.log.Errorf("writing %q: %s", name, err)
-		writeError(w, http.StatusInternalServerError, "could not write %q: %s", name, err)
+		writeErrorf(w, http.StatusInternalServerError, "could not write %q: %s", name, err)
 		return
 	}
 
@@ -206,8 +198,8 @@ func writeFileAtomic(filename string, data []byte, mode os.FileMode) error {
 	tmpName := tmp.Name()
 
 	cleanup := func() {
-		tmp.Close()        //nolint:errcheck
-		os.Remove(tmpName) //nolint:errcheck
+		tmp.Close()
+		os.Remove(tmpName)
 	}
 
 	if _, err := tmp.Write(data); err != nil {
@@ -226,12 +218,12 @@ func writeFileAtomic(filename string, data []byte, mode os.FileMode) error {
 	}
 
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
+		os.Remove(tmpName)
 		return fmt.Errorf("closing temporary file: %w", err)
 	}
 
 	if err := os.Rename(tmpName, filename); err != nil {
-		os.Remove(tmpName) //nolint:errcheck
+		os.Remove(tmpName)
 		return fmt.Errorf("replacing file: %w", err)
 	}
 
@@ -268,19 +260,19 @@ func (s *Server) reloadEngine(ctx context.Context) (string, error) {
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	if !s.hubMu.TryLock() {
-		writeError(w, http.StatusConflict, "another engine or allowlist operation is in progress")
+		writeErrorf(w, http.StatusConflict, "another engine or allowlist operation is in progress")
 		return
 	}
 	defer s.hubMu.Unlock()
 	output, err := s.reloadEngine(r.Context())
 	if err != nil {
 		if errors.Is(err, errNoReloadMethod) {
-			writeError(w, http.StatusNotImplemented, "%s", err)
+			writeErrorf(w, http.StatusNotImplemented, "%s", err)
 			return
 		}
 
 		s.log.Errorf("engine reload failed: %s: %s", err, output)
-		writeError(w, http.StatusInternalServerError, "%s", err)
+		writeErrorf(w, http.StatusInternalServerError, "%s", err)
 
 		return
 	}

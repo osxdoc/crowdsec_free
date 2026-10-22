@@ -218,7 +218,7 @@ func enabledFeatures(snapshot *metricsSnapshot) []string {
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	result, err := s.buildOverview(r.Context(), queryDuration(r.URL.Query(), "since", 24*time.Hour))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "%s", err)
+		writeErrorf(w, http.StatusBadGateway, "%s", err)
 		return
 	}
 
@@ -234,7 +234,7 @@ func (s *Server) buildOverview(ctx context.Context, since time.Duration) (*overv
 		AlertSource: "unavailable", DecisionSource: "unavailable", Health: map[string]serviceHealth{},
 	}
 	alerts, _, alertsErr := s.lapi.Alerts.List(ctx, apiclient.AlertsListOpts{
-		Since: cstime.DurationWithDays(since), Limit: &limit, IncludeCAPI: boolPtr(true), IncludeSimulated: boolPtr(true),
+		Since: cstime.DurationWithDays(since), Limit: &limit, IncludeCAPI: new(true), IncludeSimulated: new(true),
 	})
 	if alertsErr == nil && alerts != nil {
 		result.DataSources.RecentAlerts = true
@@ -419,7 +419,8 @@ func summarizeMachines(machines []machineInfo) machinesOverview {
 	overview := machinesOverview{Total: len(machines), Items: machines}
 	cutoff := time.Now().Add(-5 * time.Minute)
 
-	for _, machine := range machines {
+	for i := range machines {
+		machine := &machines[i]
 		if machine.LastSeen != nil && machine.LastSeen.After(cutoff) {
 			overview.Online++
 		}
@@ -432,7 +433,8 @@ func summarizeBouncers(bouncers []bouncerInfo) bouncersOverview {
 	overview := bouncersOverview{Total: len(bouncers), Items: bouncers}
 	cutoff := time.Now().Add(-5 * time.Minute)
 
-	for _, bouncer := range bouncers {
+	for i := range bouncers {
+		bouncer := &bouncers[i]
 		if bouncer.LastPull != nil && bouncer.LastPull.After(cutoff) {
 			overview.Active++
 		}
@@ -471,7 +473,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	snapshot, err := scrapeMetrics(ctx, s.cfg.Data.MetricsURL)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "could not scrape metrics: %s", err)
+		writeErrorf(w, http.StatusBadGateway, "could not scrape metrics: %s", err)
 		return
 	}
 

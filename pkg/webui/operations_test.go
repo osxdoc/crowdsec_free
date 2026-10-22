@@ -112,7 +112,7 @@ func TestInspectIP(t *testing.T) {
 				switch r.URL.Path {
 				case "/v1/alerts":
 					if r.URL.Query().Get("ip") != "2001:db8::1" || r.URL.Query().Get("contains") != "true" || r.URL.Query().Get("limit") != "100" {
-						writeError(w, http.StatusBadRequest, "incorrect IP lookup filters")
+						writeErrorf(w, http.StatusBadRequest, "incorrect IP lookup filters")
 						return
 					}
 					decisions := []any{}
@@ -122,7 +122,7 @@ func TestInspectIP(t *testing.T) {
 					writeJSON(w, http.StatusOK, []any{map[string]any{"id": 42, "scenario": "manual", "decisions": decisions}})
 				default:
 					if failAllowlist {
-						writeError(w, 503, "allowlist unavailable")
+						writeErrorf(w, 503, "allowlist unavailable")
 					} else {
 						writeJSON(w, 200, map[string]any{"allowlisted": true, "reason": "trusted office"})
 					}
@@ -162,7 +162,7 @@ func TestOverviewPartialFailures(t *testing.T) {
 				if available {
 					writeJSON(w, 200, []any{})
 				} else {
-					writeError(w, 503, "alerts unavailable")
+					writeErrorf(w, 503, "alerts unavailable")
 				}
 			})
 			metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, sampleExposition) }))
@@ -205,13 +205,13 @@ cs_appsec_rule_hits{appsec_engine="waf",rule_name="test-rule"} 3
 	summary := buildMetricsSummary(&metricsSnapshot{Samples: samples})
 	require.Len(t, summary.Sources, 2)
 	require.Equal(t, "http:shared", summary.Sources[0].Name)
-	require.Equal(t, 4.0, summary.Sources[0].Values["read"])
+	require.InDelta(t, 4.0, summary.Sources[0].Values["read"], 0.000001)
 	require.NotContains(t, summary.Sources[0].Values, "parsed")
-	require.Equal(t, 2.0, summary.Sources[1].Values["parsed"])
-	require.Equal(t, 1.0, summary.Sources[1].Values["allowlisted"])
+	require.InDelta(t, 2.0, summary.Sources[1].Values["parsed"], 0.000001)
+	require.InDelta(t, 1.0, summary.Sources[1].Values["allowlisted"], 0.000001)
 	require.Len(t, summary.Appsec, 1)
 	require.Contains(t, summary.Appsec[0].Values, "blocked")
-	require.Equal(t, 0.0, summary.Appsec[0].Values["blocked"])
+	require.InDelta(t, 0.0, summary.Appsec[0].Values["blocked"], 0.000001)
 	require.NotContains(t, summary.Appsec[0].Values, "requested")
 	require.Equal(t, "test-rule", summary.AppsecRules[0].Name)
 	require.True(t, summary.Present["cs_appsec_block_total"])

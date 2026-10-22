@@ -39,9 +39,6 @@ type Config struct {
 	Blocklist *BlocklistConfig `yaml:"blocklist"`
 	// Data configures optional read-only data sources.
 	Data DataConfig `yaml:"data"`
-
-	tlsCert string
-	tlsKey  string
 }
 
 // LAPIConfig holds the local API endpoint and credentials.

@@ -20,13 +20,13 @@ type NucleiConfig struct {
 
 var (
 	ErrNucleiTemplateFail = errors.New("nuclei template failed")
-	ErrNucleiRunFail = errors.New("nuclei run failed")
+	ErrNucleiRunFail      = errors.New("nuclei run failed")
 )
 
 func (nc *NucleiConfig) RunNucleiTemplate(ctx context.Context, testName string, templatePath string, target string) error {
-	tstamp := time.Now().Unix()
+	tstampSec := time.Now().Unix()
 
-	outputPrefix := fmt.Sprintf("%s/%s-%d", nc.OutputDir, testName, tstamp)
+	outputPrefix := fmt.Sprintf("%s/%s-%d", nc.OutputDir, testName, tstampSec)
 	// CVE-2023-34362_CVE-2023-34362-1702562399_stderr.txt
 	args := []string{
 		// removing the banner with --silent also removes useful [WRN] lines, so it is what it is
@@ -41,7 +41,7 @@ func (nc *NucleiConfig) RunNucleiTemplate(ctx context.Context, testName string, 
 	log.Debugf("Running Nuclei command: '%s'", cmd.String())
 
 	var (
-		out bytes.Buffer
+		out    bytes.Buffer
 		outErr bytes.Buffer
 	)
 

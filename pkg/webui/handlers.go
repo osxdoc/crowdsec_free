@@ -95,10 +95,6 @@ func queryInt(q url.Values, key string, def, minValue, maxValue int) int {
 	return value
 }
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
 func topCounts(counts map[string]int, limit int) []namedCount {
 	result := make([]namedCount, 0, len(counts))
 
@@ -204,7 +200,8 @@ func summarizeDecisions(decisions []decisionView) decisionStats {
 	byOrigin := map[string]int{}
 	byScenario := map[string]int{}
 
-	for _, decision := range decisions {
+	for i := range decisions {
+		decision := &decisions[i]
 		if decision.Simulated {
 			stats.Simulated++
 		}
@@ -257,8 +254,8 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		OriginEquals:     strings.TrimSpace(q.Get("origin")),
 		Kind:             strings.TrimSpace(q.Get("kind")),
 		Limit:            &limit,
-		IncludeCAPI:      boolPtr(q.Get("include_capi") == "true"),
-		IncludeSimulated: boolPtr(true),
+		IncludeCAPI:      new(q.Get("include_capi") == "true"),
+		IncludeSimulated: new(true),
 	}
 
 	if since > 0 {
@@ -268,7 +265,7 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	alerts, _, err := s.lapi.Alerts.List(ctx, opts)
 	if err != nil {
 		s.log.Errorf("listing alerts: %s", err)
-		writeError(w, http.StatusBadGateway, "could not list alerts: %s", err)
+		writeErrorf(w, http.StatusBadGateway, "could not list alerts: %s", err)
 		return
 	}
 
@@ -289,13 +286,13 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetAlert(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid alert id")
+		writeErrorf(w, http.StatusBadRequest, "invalid alert id")
 		return
 	}
 
 	alert, _, err := s.lapi.Alerts.GetByID(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "could not load alert %d: %s", id, err)
+		writeErrorf(w, http.StatusBadGateway, "could not load alert %d: %s", id, err)
 		return
 	}
 
@@ -308,7 +305,7 @@ func (s *Server) handleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 	resp, _, err := s.lapi.Alerts.DeleteOne(r.Context(), id)
 	if err != nil {
 		s.log.Errorf("deleting alert %s: %s", id, err)
-		writeError(w, http.StatusBadGateway, "could not delete alert %s: %s", id, err)
+		writeErrorf(w, http.StatusBadGateway, "could not delete alert %s: %s", id, err)
 		return
 	}
 
@@ -408,16 +405,16 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 		TypeEquals:           strings.TrimSpace(q.Get("type")),
 		IPEquals:             strings.TrimSpace(q.Get("ip")),
 		RangeEquals:          strings.TrimSpace(q.Get("range")),
-		ActiveDecisionEquals: boolPtr(true),
-		IncludeCAPI:          boolPtr(true),
-		IncludeSimulated:     boolPtr(true),
+		ActiveDecisionEquals: new(true),
+		IncludeCAPI:          new(true),
+		IncludeSimulated:     new(true),
 		Limit:                &limit,
 	}
 
 	alerts, _, err := s.lapi.Alerts.List(r.Context(), opts)
 	if err != nil {
 		s.log.Errorf("listing decisions: %s", err)
-		writeError(w, http.StatusBadGateway, "could not list decisions: %s", err)
+		writeErrorf(w, http.StatusBadGateway, "could not list decisions: %s", err)
 		return
 	}
 
@@ -489,7 +486,7 @@ func (req *createDecisionRequest) normalize() error {
 
 // buildManualAlert mirrors what `cscli decisions add` sends to the local API:
 // an alert whose single decision is the ban itself.
-func buildManualAlert(req createDecisionRequest, machineID string) *models.Alert {
+func buildManualAlert(req createDecisionRequest) *models.Alert {
 	empty := ""
 	simulated := false
 	leakspeed := "0"
@@ -498,17 +495,13 @@ func buildManualAlert(req createDecisionRequest, machineID string) *models.Alert
 	startAt := time.Now().UTC().Format(time.RFC3339)
 	createdAt := startAt
 
-	if machineID == "" {
-		machineID = "cswebui"
-	}
-
 	decision := &models.Decision{
 		Value:    &req.Value,
 		Scope:    &req.Scope,
 		Type:     &req.Type,
 		Duration: &req.Duration,
 		Scenario: &req.Reason,
-		Origin:   ptrString(types.CscliOrigin),
+		Origin:   new(types.CscliOrigin),
 	}
 
 	return &models.Alert{
@@ -539,28 +532,24 @@ func buildManualAlert(req createDecisionRequest, machineID string) *models.Alert
 	}
 }
 
-func ptrString(value string) *string {
-	return &value
-}
-
 func (s *Server) handleCreateDecision(w http.ResponseWriter, r *http.Request) {
 	var req createDecisionRequest
 
 	if err := decodeBody(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
 	if err := req.normalize(); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
-	alert := buildManualAlert(req, currentUser(r))
+	alert := buildManualAlert(req)
 
 	if _, _, err := s.lapi.Alerts.Add(r.Context(), models.AddAlertsRequest{alert}); err != nil {
 		s.log.Errorf("creating decision: %s", err)
-		writeError(w, http.StatusBadGateway, "could not create decision: %s", err)
+		writeErrorf(w, http.StatusBadGateway, "could not create decision: %s", err)
 		return
 	}
 
@@ -578,14 +567,14 @@ func (s *Server) handleDeleteDecision(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid decision id")
+		writeErrorf(w, http.StatusBadRequest, "invalid decision id")
 		return
 	}
 
 	resp, _, err := s.lapi.Decisions.DeleteOne(r.Context(), id)
 	if err != nil {
 		s.log.Errorf("deleting decision %s: %s", id, err)
-		writeError(w, http.StatusBadGateway, "could not delete decision %s: %s", id, err)
+		writeErrorf(w, http.StatusBadGateway, "could not delete decision %s: %s", id, err)
 		return
 	}
 
@@ -598,7 +587,7 @@ func (s *Server) handleListAllowlists(w http.ResponseWriter, r *http.Request) {
 	allowlists, _, err := s.lapi.Allowlists.List(r.Context(), apiclient.AllowlistListOpts{WithContent: true})
 	if err != nil {
 		s.log.Errorf("listing allowlists: %s", err)
-		writeError(w, http.StatusBadGateway, "could not list allowlists: %s", err)
+		writeErrorf(w, http.StatusBadGateway, "could not list allowlists: %s", err)
 		return
 	}
 
@@ -614,7 +603,7 @@ func (s *Server) handleGetAllowlist(w http.ResponseWriter, r *http.Request) {
 
 	allowlist, _, err := s.lapi.Allowlists.Get(r.Context(), name, apiclient.AllowlistGetOpts{WithContent: true})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "could not load allowlist %q: %s", name, err)
+		writeErrorf(w, http.StatusBadGateway, "could not load allowlist %q: %s", name, err)
 		return
 	}
 
@@ -623,13 +612,13 @@ func (s *Server) handleGetAllowlist(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBlocklistStats(w http.ResponseWriter, r *http.Request) {
 	if s.blocklist == nil {
-		writeError(w, http.StatusNotImplemented, "no blocklist server configured")
+		writeErrorf(w, http.StatusNotImplemented, "no blocklist server configured")
 		return
 	}
 
 	var stats blocklistStats
 	if err := s.blocklist.do(r.Context(), http.MethodGet, "/admin/v1/stats", nil, &stats); err != nil {
-		writeError(w, http.StatusBadGateway, "%s", err)
+		writeErrorf(w, http.StatusBadGateway, "%s", err)
 		return
 	}
 
@@ -638,7 +627,7 @@ func (s *Server) handleBlocklistStats(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBlocklistDecisions(w http.ResponseWriter, r *http.Request) {
 	if s.blocklist == nil {
-		writeError(w, http.StatusNotImplemented, "no blocklist server configured")
+		writeErrorf(w, http.StatusNotImplemented, "no blocklist server configured")
 		return
 	}
 
@@ -660,7 +649,7 @@ func (s *Server) handleBlocklistDecisions(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.blocklist.do(r.Context(), http.MethodGet, path, nil, &payload); err != nil {
-		writeError(w, http.StatusBadGateway, "%s", err)
+		writeErrorf(w, http.StatusBadGateway, "%s", err)
 		return
 	}
 
@@ -669,14 +658,14 @@ func (s *Server) handleBlocklistDecisions(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleBlocklistCreate(w http.ResponseWriter, r *http.Request) {
 	if s.blocklist == nil {
-		writeError(w, http.StatusNotImplemented, "no blocklist server configured")
+		writeErrorf(w, http.StatusNotImplemented, "no blocklist server configured")
 		return
 	}
 
 	var req createDecisionRequest
 
 	if err := decodeBody(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
@@ -684,7 +673,7 @@ func (s *Server) handleBlocklistCreate(w http.ResponseWriter, r *http.Request) {
 	local := req
 
 	if err := local.normalize(); err != nil {
-		writeError(w, http.StatusBadRequest, "%s", err)
+		writeErrorf(w, http.StatusBadRequest, "%s", err)
 		return
 	}
 
@@ -698,7 +687,7 @@ func (s *Server) handleBlocklistCreate(w http.ResponseWriter, r *http.Request) {
 
 	var created any
 	if err := s.blocklist.do(r.Context(), http.MethodPost, "/admin/v1/decisions", body, &created); err != nil {
-		writeError(w, http.StatusBadGateway, "%s", err)
+		writeErrorf(w, http.StatusBadGateway, "%s", err)
 		return
 	}
 
@@ -709,18 +698,18 @@ func (s *Server) handleBlocklistCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBlocklistDelete(w http.ResponseWriter, r *http.Request) {
 	if s.blocklist == nil {
-		writeError(w, http.StatusNotImplemented, "no blocklist server configured")
+		writeErrorf(w, http.StatusNotImplemented, "no blocklist server configured")
 		return
 	}
 
 	id := r.PathValue("id")
 	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid decision id")
+		writeErrorf(w, http.StatusBadRequest, "invalid decision id")
 		return
 	}
 
 	if err := s.blocklist.do(r.Context(), http.MethodDelete, "/admin/v1/decisions/"+id, nil, nil); err != nil {
-		writeError(w, http.StatusBadGateway, "%s", err)
+		writeErrorf(w, http.StatusBadGateway, "%s", err)
 		return
 	}
 
@@ -729,13 +718,13 @@ func (s *Server) handleBlocklistDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBlocklistMachines(w http.ResponseWriter, r *http.Request) {
 	if s.blocklist == nil {
-		writeError(w, http.StatusNotImplemented, "no blocklist server configured")
+		writeErrorf(w, http.StatusNotImplemented, "no blocklist server configured")
 		return
 	}
 
 	var payload any
 	if err := s.blocklist.do(r.Context(), http.MethodGet, "/admin/v1/machines", nil, &payload); err != nil {
-		writeError(w, http.StatusBadGateway, "%s", err)
+		writeErrorf(w, http.StatusBadGateway, "%s", err)
 		return
 	}
 

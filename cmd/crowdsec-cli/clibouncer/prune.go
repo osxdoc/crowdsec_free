@@ -19,9 +19,10 @@ const defaultPruneDuration = 60 * time.Minute
 
 func (cli *cliBouncers) prune(ctx context.Context, duration time.Duration, force bool) error {
 	if duration < 2*time.Minute {
-		if yes, err := ask.YesNo(
+		yes, err := ask.YesNo(
 			"The duration you provided is less than 2 minutes. "+
-				"This may remove active bouncers. Continue?", false); err != nil {
+				"This may remove active bouncers. Continue?", false)
+		if err != nil {
 			return err
 		} else if !yes {
 			fmt.Fprintln(os.Stdout, "User aborted prune. No changes were made.")
@@ -42,9 +43,10 @@ func (cli *cliBouncers) prune(ctx context.Context, duration time.Duration, force
 	cli.listHuman(color.Output, bouncers)
 
 	if !force {
-		if yes, err := ask.YesNo(
+		yes, err := ask.YesNo(
 			"You are about to PERMANENTLY remove the above bouncers from the database. "+
-				"These will NOT be recoverable. Continue?", false); err != nil {
+				"These will NOT be recoverable. Continue?", false)
+		if err != nil {
 			return err
 		} else if !yes {
 			fmt.Fprintln(os.Stdout, "User aborted prune. No changes were made.")

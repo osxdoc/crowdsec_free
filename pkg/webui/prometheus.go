@@ -3,6 +3,7 @@ package webui
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,7 +157,7 @@ func parseMetricLine(line string) (metricSample, error) {
 
 		closeIdx := strings.LastIndexByte(line, '}')
 		if closeIdx < open {
-			return metricSample{}, fmt.Errorf("malformed metric line")
+			return metricSample{}, errors.New("malformed metric line")
 		}
 
 		labels = parseMetricLabels(line[open+1 : closeIdx])
@@ -164,7 +165,7 @@ func parseMetricLine(line string) (metricSample, error) {
 	} else {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
-			return metricSample{}, fmt.Errorf("malformed metric line")
+			return metricSample{}, errors.New("malformed metric line")
 		}
 
 		name = fields[0]
@@ -173,7 +174,7 @@ func parseMetricLine(line string) (metricSample, error) {
 
 	valueField := strings.Fields(rest)
 	if len(valueField) == 0 {
-		return metricSample{}, fmt.Errorf("missing value")
+		return metricSample{}, errors.New("missing value")
 	}
 
 	value, err := strconv.ParseFloat(valueField[0], 64)

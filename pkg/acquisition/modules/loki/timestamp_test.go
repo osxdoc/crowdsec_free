@@ -41,7 +41,7 @@ func TestTimestampDuration(t *testing.T) {
 		t.Fail()
 	}
 	z := time.Now().Add(-d)
-	if z.Round(time.Second) != time.Time(tt).Round(time.Second) {
+	if !z.Round(time.Second).Equal(time.Time(tt).Round(time.Second)) {
 		t.Fail()
 	}
 }

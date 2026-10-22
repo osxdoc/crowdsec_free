@@ -33,13 +33,13 @@ func TestParseMetrics(t *testing.T) {
 
 	snapshot := &metricsSnapshot{Samples: samples}
 
-	require.Equal(t, 10.0, snapshot.sum("cs_parser_hits_total"))
-	require.Equal(t, 6.0, snapshot.sum("cs_parser_hits_ok_total"))
-	require.Equal(t, 1.0, snapshot.sum("cs_parser_hits_ko_total"))
+	require.InDelta(t, 10.0, snapshot.sum("cs_parser_hits_total"), 0.000001)
+	require.InDelta(t, 6.0, snapshot.sum("cs_parser_hits_ok_total"), 0.000001)
+	require.InDelta(t, 1.0, snapshot.sum("cs_parser_hits_ko_total"), 0.000001)
 
 	sources := snapshot.groupSum("cs_parser_hits_total", "source")
-	require.Equal(t, 7.0, sources["/var/log/auth.log"])
-	require.Equal(t, 3.0, sources["/var/log/nginx.log"])
+	require.InDelta(t, 7.0, sources["/var/log/auth.log"], 0.000001)
+	require.InDelta(t, 3.0, sources["/var/log/nginx.log"], 0.000001)
 
 	average, ok := snapshot.histogramAverage("cs_parsing_time_seconds")
 	require.True(t, ok)
@@ -47,7 +47,7 @@ func TestParseMetrics(t *testing.T) {
 
 	value, ok := snapshot.value("cs_capi_last_pull_timestamp")
 	require.True(t, ok)
-	require.Equal(t, 1.7e9, value)
+	require.InDelta(t, 1.7e9, value, 0.000001)
 
 	require.Equal(t, []string{"capi", "lapi"}, snapshot.labelValues("cs_features", "feature"))
 }
@@ -60,11 +60,11 @@ func TestBuildMetricsSummary(t *testing.T) {
 	require.NotNil(t, summary)
 	require.True(t, summary.Available)
 
-	require.Equal(t, 10.0, summary.ParserHits)
-	require.Equal(t, 6.0, summary.ParserOK)
-	require.Equal(t, 1.0, summary.ParserKO)
-	require.Equal(t, 2.0, summary.BucketsCurrent)
-	require.Equal(t, 1.0, summary.BucketOverflows)
+	require.InDelta(t, 10.0, summary.ParserHits, 0.000001)
+	require.InDelta(t, 6.0, summary.ParserOK, 0.000001)
+	require.InDelta(t, 1.0, summary.ParserKO, 0.000001)
+	require.InDelta(t, 2.0, summary.BucketsCurrent, 0.000001)
+	require.InDelta(t, 1.0, summary.BucketOverflows, 0.000001)
 
 	// The KO rate is computed in the UI; only the raw counters matter here.
 	require.NotNil(t, summary.AvgParseMS)
@@ -83,14 +83,14 @@ func TestParseMetricLabelsEscapes(t *testing.T) {
 	labels := parseMetricLabels(`source="a \"quoted\" value",type="syslog",empty=""`)
 	require.Equal(t, `a "quoted" value`, labels["source"])
 	require.Equal(t, "syslog", labels["type"])
-	require.Equal(t, "", labels["empty"])
+	require.Empty(t, labels["empty"])
 }
 
 func TestParseMetricLineWithoutLabels(t *testing.T) {
 	sample, err := parseMetricLine("cs_info 1")
 	require.NoError(t, err)
 	require.Equal(t, "cs_info", sample.Name)
-	require.Equal(t, 1.0, sample.Value)
+	require.InDelta(t, 1.0, sample.Value, 0.000001)
 	require.Empty(t, sample.Labels)
 }
 
@@ -106,7 +106,7 @@ func TestBuildMetricsSummaryEmpty(t *testing.T) {
 
 	summary := buildMetricsSummary(&metricsSnapshot{})
 	require.True(t, summary.Available)
-	require.Equal(t, 0.0, summary.ParserHits)
+	require.InDelta(t, 0.0, summary.ParserHits, 0.000001)
 	require.Nil(t, summary.CapiLastPull)
 	require.Nil(t, summary.AvgParseMS)
 	require.Empty(t, summary.Features)

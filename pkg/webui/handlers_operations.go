@@ -19,16 +19,16 @@ func (s *Server) handleInspectIP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ip, err := netip.ParseAddr(strings.TrimSpace(r.URL.Query().Get("ip")))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "enter a valid IPv4 or IPv6 address")
+		writeErrorf(w, http.StatusBadRequest, "enter a valid IPv4 or IPv6 address")
 		return
 	}
 	limit := 100
 	contains := true
 	alerts, _, alertsErr := s.lapi.Alerts.List(ctx, apiclient.AlertsListOpts{
-		IPEquals: ip.String(), Contains: &contains, Limit: &limit, IncludeCAPI: boolPtr(true), IncludeSimulated: boolPtr(true),
+		IPEquals: ip.String(), Contains: &contains, Limit: &limit, IncludeCAPI: new(true), IncludeSimulated: new(true),
 	})
 	active, _, decisionsErr := s.lapi.Alerts.List(ctx, apiclient.AlertsListOpts{
-		IPEquals: ip.String(), Contains: &contains, Limit: &limit, ActiveDecisionEquals: boolPtr(true), IncludeCAPI: boolPtr(true), IncludeSimulated: boolPtr(true),
+		IPEquals: ip.String(), Contains: &contains, Limit: &limit, ActiveDecisionEquals: new(true), IncludeCAPI: new(true), IncludeSimulated: new(true),
 	})
 	allowlist, _, allowlistErr := s.lapi.Allowlists.CheckIfAllowlistedWithReason(ctx, ip.String())
 	summaries := []alertSummary{}
@@ -68,7 +68,7 @@ func (s *Server) handleAllowlistAction(action string) http.HandlerFunc {
 		var req allowlistActionRequest
 		if action != "delete" {
 			if err := decodeBody(w, r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, "%s", err)
+				writeErrorf(w, http.StatusBadRequest, "%s", err)
 				return
 			}
 		}
@@ -77,58 +77,57 @@ func (s *Server) handleAllowlistAction(action string) http.HandlerFunc {
 			name = strings.TrimSpace(req.Name)
 		}
 		if name == "" || name == "." || name == ".." || len(name) > 128 || strings.ContainsAny(name, "\x00\r\n/?#\\") {
-			writeError(w, http.StatusBadRequest, "invalid allowlist name")
+			writeErrorf(w, http.StatusBadRequest, "invalid allowlist name")
 			return
 		}
 		if len(req.Description) > 1024 {
-			writeError(w, http.StatusBadRequest, "description is too long")
+			writeErrorf(w, http.StatusBadRequest, "description is too long")
 			return
 		}
 		args := []string{"allowlists", action}
 		if action == "create" {
 			if strings.TrimSpace(req.Description) == "" {
-				writeError(w, http.StatusBadRequest, "description is required")
+				writeErrorf(w, http.StatusBadRequest, "description is required")
 				return
 			}
-			args = append(args, "--description", req.Description, "--", name)
+			args = append(args, "--description", req.Description)
 		} else {
 			list, _, err := s.lapi.Allowlists.Get(r.Context(), name, apiclient.AllowlistGetOpts{})
 			if err != nil {
-				writeError(w, http.StatusBadGateway, "could not load allowlist: %s", err)
+				writeErrorf(w, http.StatusBadGateway, "could not load allowlist: %s", err)
 				return
 			}
 			if list == nil || list.ConsoleManaged {
-				writeError(w, http.StatusForbidden, "console-managed allowlists cannot be edited here")
+				writeErrorf(w, http.StatusForbidden, "console-managed allowlists cannot be edited here")
 				return
 			}
-			if action == "add" || action == "remove" {
-				req.Value = strings.TrimSpace(req.Value)
-				if _, err := netip.ParseAddr(req.Value); err != nil {
-					if _, err := netip.ParsePrefix(req.Value); err != nil {
-						writeError(w, http.StatusBadRequest, "value must be an IP address or CIDR range")
-						return
-					}
+		}
+		if action == "add" || action == "remove" {
+			req.Value = strings.TrimSpace(req.Value)
+			if _, err := netip.ParseAddr(req.Value); err != nil {
+				if _, err := netip.ParsePrefix(req.Value); err != nil {
+					writeErrorf(w, http.StatusBadRequest, "value must be an IP address or CIDR range")
+					return
 				}
-				if action == "add" {
-					if req.Duration != "" {
-						duration, err := cstime.ParseDurationWithDays(req.Duration)
-						if err != nil || duration <= 0 {
-							writeError(w, http.StatusBadRequest, "duration must be positive, or empty for permanent")
-							return
-						}
-						args = append(args, "--expiration", req.Duration)
-					}
-					if req.Description != "" {
-						args = append(args, "--comment", req.Description)
-					}
-				}
-				args = append(args, "--", name, req.Value)
-			} else {
-				args = append(args, "--", name)
 			}
 		}
+		if action == "add" && req.Duration != "" {
+			duration, err := cstime.ParseDurationWithDays(req.Duration)
+			if err != nil || duration <= 0 {
+				writeErrorf(w, http.StatusBadRequest, "duration must be positive, or empty for permanent")
+				return
+			}
+			args = append(args, "--expiration", req.Duration)
+		}
+		if action == "add" && req.Description != "" {
+			args = append(args, "--comment", req.Description)
+		}
+		args = append(args, "--", name)
+		if action == "add" || action == "remove" {
+			args = append(args, req.Value)
+		}
 		if !s.hubMu.TryLock() {
-			writeError(w, http.StatusConflict, "another engine or allowlist operation is in progress")
+			writeErrorf(w, http.StatusConflict, "another engine or allowlist operation is in progress")
 			return
 		}
 		defer s.hubMu.Unlock()
@@ -136,7 +135,7 @@ func (s *Server) handleAllowlistAction(action string) http.HandlerFunc {
 		defer cancel()
 		output, err := s.runCscli(ctx, args...)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "%s: %s", err, output)
+			writeErrorf(w, http.StatusInternalServerError, "%s: %s", err, output)
 			return
 		}
 		s.log.Infof("user %q changed allowlist %q (%s)", currentUser(r), name, action)
@@ -155,7 +154,7 @@ func (s *Server) testEngineConfig(ctx context.Context) (string, error) {
 
 func (s *Server) handleCheckConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.hubMu.TryLock() {
-		writeError(w, http.StatusConflict, "another engine or allowlist operation is in progress")
+		writeErrorf(w, http.StatusConflict, "another engine or allowlist operation is in progress")
 		return
 	}
 	defer s.hubMu.Unlock()
@@ -164,10 +163,10 @@ func (s *Server) handleCheckConfig(w http.ResponseWriter, r *http.Request) {
 	output, err := s.runConfigTest(ctx)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			writeError(w, http.StatusNotImplemented, "crowdsec must be installed in PATH to validate the saved configuration")
+			writeErrorf(w, http.StatusNotImplemented, "crowdsec must be installed in PATH to validate the saved configuration")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "configuration check failed: %s: %s", err, output)
+		writeErrorf(w, http.StatusBadRequest, "configuration check failed: %s: %s", err, output)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Saved engine configuration is valid", "output": output})
