@@ -37,7 +37,18 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR"
 
 configure() {
     if [ -d /etc/crowdsec-defaults ]; then
-        cp -an /etc/crowdsec-defaults/. "$CONFIG_DIR"/ 2>/dev/null || true
+        # busybox "cp -an src/." copies nothing at all (silently, exit 0), and the
+        # runtime image has no GNU coreutils - seed the entries one by one.
+        for entry in /etc/crowdsec-defaults/*; do
+            name="${entry#/etc/crowdsec-defaults/}"
+
+            if [ -e "$CONFIG_DIR/$name" ]; then
+                continue
+            fi
+
+            cp -a "$entry" "$CONFIG_DIR/$name"
+            log "seeded $name"
+        done
     fi
 
     # The web UI refuses to start with the placeholder hash: generate one.
