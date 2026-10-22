@@ -183,8 +183,10 @@ Country, AS and coordinates come from the GeoIP enrichment, which needs
 (`cscli hub update --with-content` downloads them). Without them the map shows
 `No GeoIP data yet` and the country/AS columns stay empty.
 
-The map itself is a 25 KB simplified Natural Earth 110m land outline (public
-domain) embedded in the UI — no external tiles, no network calls.
+The map is a choropleth generated from Natural Earth 110m (public domain,
+~70 KB of country and land outlines embedded in the UI): countries are coloured
+by alert count, with small dots marking the exact GeoIP clusters. No external
+tiles, no network calls.
 
 ## Architecture notes
 

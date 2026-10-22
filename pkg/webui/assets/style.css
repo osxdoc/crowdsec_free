@@ -643,15 +643,29 @@ pre.json {
   vector-effect: non-scaling-stroke;
 }
 
-.map-bubble {
-  fill: rgba(56, 189, 248, 0.28);
-  stroke: rgba(56, 189, 248, 0.95);
-  stroke-width: 0.5;
+.map-country {
+  stroke: #0b1620;
+  stroke-width: 0.25;
   vector-effect: non-scaling-stroke;
-  transition: fill 120ms ease;
+  transition: fill 150ms ease;
 }
 
-.map-bubble:hover { fill: rgba(56, 189, 248, 0.55); }
+.map-country.has-data {
+  stroke: rgba(125, 211, 252, 0.65);
+  stroke-width: 0.5;
+}
+
+.map-country:hover {
+  stroke: #7dd3fc;
+  stroke-width: 1;
+}
+
+.map-dot {
+  fill: #f0f9ff;
+  opacity: 0.85;
+  stroke: none;
+  pointer-events: none;
+}
 
 .map-large .worldmap { max-width: 1120px; }
 
@@ -664,11 +678,10 @@ pre.json {
   padding: 6px 4px 0;
 }
 
-.map-legend .dot {
+.map-scale {
   display: inline-block;
-  border-radius: 50%;
-  background: rgba(56, 189, 248, 0.35);
-  border: 1px solid rgba(56, 189, 248, 0.9);
-  vertical-align: middle;
-  margin-right: 4px;
+  width: 120px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.16), rgba(56, 189, 248, 0.88));
 }

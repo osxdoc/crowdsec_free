@@ -1035,30 +1035,45 @@ function projectGeo(lat, lon) {
   return [lon + 180, 90 - lat];
 }
 
-function renderWorldMap(geoPoints, byCountry, options = {}) {
-  const points = [];
-
-  if (geoPoints && geoPoints.length > 0) {
-    geoPoints.forEach((point) => points.push(point));
-  } else if (byCountry && byCountry.length > 0 && typeof COUNTRY_CENTROIDS !== 'undefined') {
-    byCountry.forEach((country) => {
-      const centroid = COUNTRY_CENTROIDS[country.name];
-      if (centroid) {
-        points.push({ lat: centroid[0], lon: centroid[1], count: country.count, country: country.name });
-      }
-    });
+function mapIntensity(count, max) {
+  if (!count || count <= 0) {
+    return 'rgba(21, 34, 47, 0.85)';
   }
 
-  if (points.length === 0) {
+  // Any country with data is clearly visible; the busiest one is near opaque.
+  const ratio = count / Math.max(1, max);
+  return `rgba(56, 189, 248, ${(0.55 + 0.4 * ratio).toFixed(3)})`;
+}
+
+function renderWorldMap(geoPoints, byCountry) {
+  const counts = {};
+  (byCountry || []).forEach((country) => { counts[country.name] = country.count; });
+
+  const values = Object.values(counts);
+  const max = Math.max(1, ...values);
+  const countriesWithData = values.length;
+
+  if (countriesWithData === 0 && (geoPoints || []).length === 0) {
     return '<div class="empty">No GeoIP data yet. Enable the geoip-enrich parser and provide GeoLite2 data.</div>';
   }
 
-  const max = Math.max(1, ...points.map((point) => point.count));
-  const bubbles = points.map((point) => {
+  let countryLayer = '';
+
+  if (typeof COUNTRY_PATHS !== 'undefined' && Object.keys(COUNTRY_PATHS).length > 0) {
+    countryLayer = Object.entries(COUNTRY_PATHS).map(([iso, path]) => {
+      const count = counts[iso] || 0;
+      const name = (COUNTRY_CENTROIDS[iso] || [0, 0, iso])[2];
+      const title = count > 0 ? `${name}: ${count} alert(s)` : name;
+      const className = count > 0 ? 'map-country has-data' : 'map-country';
+      return `<path class="${className}" d="${path}" fill="${mapIntensity(count, max)}"><title>${esc(title)}</title></path>`;
+    }).join('');
+  }
+
+  // Small dots keep the exact cluster visible on top of the country shading.
+  const dots = (geoPoints || []).map((point) => {
     const [x, y] = projectGeo(point.lat, point.lon);
-    const radius = 1.6 + 6 * Math.sqrt(point.count / max);
     const label = point.country ? `${point.country}: ${point.count} alert(s)` : `${point.count} alert(s)`;
-    return `<circle class="map-bubble" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}"><title>${esc(label)}</title></circle>`;
+    return `<circle class="map-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="1.1"><title>${esc(label)}</title></circle>`;
   }).join('');
 
   const graticule = [];
@@ -1077,12 +1092,14 @@ function renderWorldMap(geoPoints, byCountry, options = {}) {
     <svg class="worldmap" viewBox="0 0 360 180" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Origin of the detected attacks">
       <g class="map-graticule">${graticule.join('')}</g>
       <path class="map-land" d="${WORLD_MAP_PATH}"/>
-      <g>${bubbles}</g>
+      <g>${countryLayer}</g>
+      <g class="map-dots">${dots}</g>
     </svg>
     <div class="map-legend">
-      <span><span class="dot" style="width:6px;height:6px"></span>few</span>
-      <span><span class="dot" style="width:11px;height:11px"></span>many</span>
-      <span>${points.length} location(s), bubble size = alerts</span>
+      <span>few</span>
+      <span class="map-scale"></span>
+      <span>many</span>
+      <span>${countriesWithData} countries, ${(geoPoints || []).length} location(s)</span>
     </div>`;
 }
 
