@@ -7,7 +7,7 @@ a deployment can be monitored, configured and kept up to date without an account
 
 | Component | Purpose |
 | --------- | ------- |
-| `cswebui` | Self-hosted web UI: dashboard, alerts, decisions, allowlists, config editor, engine reload |
+| `cswebui` | Self-hosted web UI: dashboard, alerts, decisions, allowlists, hub, config editor, engine reload |
 | `csblocklistd` | Self-hosted CAPI-compatible server: engines register, push signals and pull a shared blocklist |
 | `cscli capi register --url ...` | One added flag so engines can register against your own server |
 
@@ -77,6 +77,10 @@ Pages:
 - **Allowlists** — read-only view of centralized allowlists and their items.
 - **Shared blocklist** — only with `blocklist.admin_url` configured: entries,
   connected engines, add/remove entries.
+- **Hub** — installed/active/edited state for every item type, the age of the hub index,
+  and the files in the config tree the hub does not manage. Refresh the index, upgrade
+  installed items, install or remove single items and collections. Everything but an
+  index refresh reloads the engine.
 - **Configuration** — edit the whitelisted files, YAML is validated before
   writing, the previous version is kept as `<file>.bak`, then "Reload engine"
   applies the change.

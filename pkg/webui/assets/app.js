@@ -224,6 +224,7 @@ const routes = {
   metrics: renderMetrics,
   allowlists: renderAllowlists,
   blocklist: renderBlocklist,
+  hub: renderHub,
   config: renderConfig,
 };
 
@@ -1330,6 +1331,216 @@ async function renderMetrics() {
         </div>
       </div>
     </div>`;
+}
+
+/* ---------------- hub ---------------- */
+
+const hubFilter = { search: '', category: '', installedOnly: true };
+
+let hubData = null;
+
+function hubBadges(item) {
+  const state = item.enabled
+    ? '<span class="badge ok">active</span>'
+    : item.installed
+      ? '<span class="badge warn">inactive</span>'
+      : '<span class="badge off">not in use</span>';
+
+  if (!item.tainted) return state;
+
+  return `${state} <span class="badge warn" title="changed by hand: an upgrade leaves it alone">edited</span>`;
+}
+
+function hubBundles(item) {
+  if (!item.dependencies) return '<span class="hint">—</span>';
+
+  return Object.entries(item.dependencies).map(([kind, count]) => `${count} ${kind}`).join(', ');
+}
+
+function hubActionButton(category, item) {
+  const path = item.enabled ? '/api/hub/remove' : '/api/hub/install';
+  const label = item.enabled ? 'Remove' : item.installed ? 'Activate' : 'Install';
+
+  return `<button class="btn ${item.enabled ? 'danger' : ''}" data-hub-action data-path="${path}" ` +
+    `data-category="${esc(category)}" data-name="${esc(item.name)}" ` +
+    `style="padding:4px 9px;font-size:12px">${label}</button>`;
+}
+
+function hubFilteredItems() {
+  const rows = [];
+
+  for (const category of hubData.categories) {
+    for (const item of category.items) rows.push({ ...item, category: category.name });
+  }
+
+  for (const item of hubData.collections) rows.push({ ...item, category: 'collections' });
+
+  const search = hubFilter.search.toLowerCase();
+
+  return rows.filter((item) => {
+    if (hubFilter.installedOnly && !item.installed) return false;
+    if (hubFilter.category && item.category !== hubFilter.category) return false;
+
+    return !search || item.name.toLowerCase().includes(search) || (item.description || '').toLowerCase().includes(search);
+  });
+}
+
+function renderHubLists() {
+  const status = hubData;
+  let available = status.collections.length;
+  let installed = 0;
+  let enabled = 0;
+  let edited = 0;
+
+  for (const item of status.collections) {
+    if (item.installed) installed += 1;
+    if (item.enabled) enabled += 1;
+    if (item.tainted) edited += 1;
+  }
+
+  for (const category of status.categories) {
+    available += category.available;
+    installed += category.installed;
+    enabled += category.enabled;
+
+    for (const item of category.items) {
+      if (item.tainted) edited += 1;
+    }
+  }
+
+  $('#hub-summary').innerHTML = `
+    <div class="card"><div class="label">Hub index</div>
+      <div class="value" style="font-size:20px">${status.index_missing ? 'missing' : esc(relTime(status.index_updated))}</div></div>
+    <div class="card"><div class="label">Items in the hub</div><div class="value">${fmtNum(available)}</div></div>
+    <div class="card"><div class="label">Active</div><div class="value">${fmtNum(enabled)}</div></div>
+    <div class="card"><div class="label">Downloaded</div><div class="value">${fmtNum(installed)}</div></div>
+    <div class="card"><div class="label">Edited by hand</div><div class="value" title="cscli will not overwrite these">${fmtNum(edited)}</div></div>`;
+
+  $('#hub-category').innerHTML = ['<option value="">all types</option>']
+    .concat([...status.categories.map((category) => category.name), 'collections']
+      .map((name) => `<option value="${esc(name)}" ${hubFilter.category === name ? 'selected' : ''}>${esc(name)}</option>`))
+    .join('');
+
+  const items = hubFilteredItems();
+  const rows = items.map((item) => `
+    <tr>
+      <td class="mono">${esc(item.name)}${item.description ? `<div class="hint">${esc(item.description)}</div>` : ''}</td>
+      <td>${esc(item.category)}</td>
+      <td class="mono">${esc(item.version || '—')}</td>
+      <td>${hubBadges(item)}</td>
+      <td class="hint">${hubBundles(item)}</td>
+      <td>${hubActionButton(item.category, item)}</td>
+    </tr>`).join('');
+
+  $('#hub-items').innerHTML = rows
+    ? `<div class="table-wrap"><table>
+        <thead><tr><th>Item</th><th>Type</th><th>Version</th><th>State</th><th>Bundles</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+    : '<div class="empty">Nothing matches: untick "installed only" to browse the whole hub</div>';
+
+  $('#hub-count').textContent = `${fmtNum(items.length)} shown`;
+
+  const locals = status.local_only || [];
+
+  $('#hub-local').innerHTML = locals.length
+    ? `<div class="table-wrap"><table><thead><tr><th>File below ${esc(status.config_dir)}</th></tr></thead><tbody>` +
+      locals.map((file) => `<tr><td class="mono">${esc(file)}</td></tr>`).join('') + '</tbody></table></div>'
+    : '<div class="empty">Every file in the config tree comes from the hub</div>';
+
+  $$('button[data-hub-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const body = { category: button.dataset.category, name: button.dataset.name };
+
+      if (button.dataset.path === '/api/hub/remove' && !confirm(`Remove ${body.category}/${body.name} and reload the engine?`)) return;
+
+      hubAction(button.dataset.path, body, button);
+    });
+  });
+}
+
+async function hubAction(path, body, button) {
+  $$('button').forEach((item) => { item.disabled = true; });
+
+  if (button) button.textContent = 'Working…';
+
+  try {
+    const result = await api(path, { method: 'POST', body });
+
+    if (result.reload_error) {
+      toast(`${result.message} — the engine was NOT reloaded: ${result.reload_error}`, 'error');
+    } else {
+      toast(result.reload ? `${result.message} · ${result.reload}` : result.message, 'ok');
+    }
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+
+  renderHub();
+}
+
+async function renderHub() {
+  const view = $('#view');
+
+  view.innerHTML = `
+    <div class="page-header">
+      <div><h2>Hub</h2><p>What the engine detects with: parsers, scenarios, contexts, collections.</p></div>
+      <div class="toolbar">
+        <button class="btn secondary" data-hub-update>Refresh index</button>
+        <button class="btn secondary" data-hub-upgrade>Upgrade items</button>
+      </div>
+    </div>
+    <div class="cards" id="hub-summary">${spinner()}</div>
+    <div class="panel" style="margin-bottom:14px">
+      <div class="panel-head"><h3>Items</h3><span class="hint" id="hub-count"></span></div>
+      <div class="panel-body">
+        <div class="toolbar">
+          <input type="text" id="hub-search" placeholder="filter by name or description" value="${esc(hubFilter.search)}" style="flex:1;min-width:180px">
+          <select id="hub-category"></select>
+          <label class="hint"><input type="checkbox" id="hub-installed" ${hubFilter.installedOnly ? 'checked' : ''}> installed only</label>
+        </div>
+        <div id="hub-items">${spinner()}</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Files not from the hub</h3><span class="hint">added by hand, cscli does not manage them</span></div>
+      <div id="hub-local">${spinner()}</div>
+    </div>`;
+
+  let status;
+
+  try {
+    status = await api('/api/hub');
+  } catch (error) {
+    view.innerHTML = `<div class="page-header"><div><h2>Hub</h2></div></div>${errorBox(error.message)}`;
+
+    return;
+  }
+
+  hubData = status;
+  renderHubLists();
+
+  $('#hub-search').addEventListener('input', (event) => {
+    hubFilter.search = event.target.value;
+    renderHubLists();
+  });
+
+  $('#hub-installed').addEventListener('change', (event) => {
+    hubFilter.installedOnly = event.target.checked;
+    renderHubLists();
+  });
+
+  $('#hub-category').addEventListener('change', (event) => {
+    hubFilter.category = event.target.value;
+    renderHubLists();
+  });
+
+  $('[data-hub-update]').addEventListener('click', (event) => hubAction('/api/hub/update', {}, event.currentTarget));
+
+  $('[data-hub-upgrade]').addEventListener('click', (event) => {
+    if (!confirm('Upgrade every installed hub item and reload the engine?')) return;
+
+    hubAction('/api/hub/upgrade', {}, event.currentTarget);
+  });
 }
 
 boot();
