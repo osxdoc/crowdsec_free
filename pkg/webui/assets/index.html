@@ -25,20 +25,23 @@
         <input type="password" id="password" name="password" autocomplete="current-password" required>
       </div>
       <button class="btn block" type="submit" id="login-submit">Sign in</button>
-      <p class="hint" id="login-error" style="margin-top:12px;color:var(--danger)"></p>
+      <p class="hint" id="login-error" role="alert" style="margin-top:12px;color:var(--danger)"></p>
     </form>
   </div>
 
   <div id="app" class="app hidden">
+    <a class="skip-link" href="#view">Skip to content</a>
     <aside class="sidebar">
       <div class="brand">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 4 6v6c0 5 3.4 9.3 8 10 4.6-.7 8-5 8-10V6l-8-4Zm0 2.2 6 3V12c0 3.9-2.5 7.3-6 8-3.5-.7-6-4.1-6-8V7.2l6-3Z"/></svg>
         CrowdSec <span class="tag">free</span>
       </div>
-      <nav class="nav" id="nav">
+      <button class="btn secondary nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="nav">Menu</button>
+      <nav class="nav" id="nav" aria-label="Main navigation">
         <a href="#/dashboard" data-route="dashboard">Dashboard</a>
         <a href="#/alerts" data-route="alerts">Alerts</a>
         <a href="#/decisions" data-route="decisions">Decisions</a>
+        <a href="#/inspect" data-route="inspect">IP lookup</a>
         <a href="#/geo" data-route="geo">Geo</a>
         <a href="#/infrastructure" data-route="infrastructure">Infrastructure</a>
         <a href="#/metrics" data-route="metrics">Metrics</a>
@@ -54,13 +57,14 @@
       </div>
     </aside>
 
-    <main class="content" id="view"></main>
+    <main class="content" id="view" tabindex="-1"></main>
   </div>
 
-  <div class="toasts" id="toasts"></div>
+  <div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
   <div id="modal-root"></div>
 
   <script src="/worldmap.js"></script>
+  <script src="/operations.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

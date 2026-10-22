@@ -37,7 +37,8 @@ type Server struct {
 	// files and on the local API database.
 	hubMu sync.Mutex
 	// runCscli exists so tests can capture the arguments without running cscli.
-	runCscli func(ctx context.Context, args ...string) (string, error)
+	runCscli      func(ctx context.Context, args ...string) (string, error)
+	runConfigTest func(ctx context.Context) (string, error)
 }
 
 type ctxKey string
@@ -85,6 +86,13 @@ func NewServer(cfg *Config, log *logrus.Logger, version string) (*Server, error)
 		UserAgent:     "cswebui/" + version,
 	})
 
+	// Interactive requests surface outages instead of waiting through daemon retry backoff.
+	lapi.GetClient().Timeout = 3 * time.Second
+	lapi.GetClient().Transport.(*apiclient.JWTTransport).RetryConfig = apiclient.NewRetryConfig(
+		apiclient.WithStatusCodeConfig(http.StatusUnauthorized, 2, false, true),
+		apiclient.WithStatusCodeConfig(http.StatusForbidden, 2, false, true),
+	)
+
 	server := &Server{
 		cfg:       cfg,
 		log:       log,
@@ -95,6 +103,7 @@ func NewServer(cfg *Config, log *logrus.Logger, version string) (*Server, error)
 	}
 
 	server.runCscli = server.execCscli
+	server.runConfigTest = server.testEngineConfig
 
 	if cfg.Blocklist != nil {
 		server.blocklist = newBlocklistClient(cfg.Blocklist)
@@ -159,14 +168,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/decisions", s.withAuth(s.handleListDecisions))
 	mux.HandleFunc("POST /api/decisions", s.withAuth(s.handleCreateDecision))
 	mux.HandleFunc("DELETE /api/decisions/{id}", s.withAuth(s.handleDeleteDecision))
+	mux.HandleFunc("GET /api/inspect", s.withAuth(s.handleInspectIP))
 
 	mux.HandleFunc("GET /api/allowlists", s.withAuth(s.handleListAllowlists))
 	mux.HandleFunc("GET /api/allowlists/{name}", s.withAuth(s.handleGetAllowlist))
+	mux.HandleFunc("POST /api/allowlists", s.withAuth(s.handleAllowlistAction("create")))
+	mux.HandleFunc("DELETE /api/allowlists/{name}", s.withAuth(s.handleAllowlistAction("delete")))
+	mux.HandleFunc("POST /api/allowlists/{name}/items", s.withAuth(s.handleAllowlistAction("add")))
+	mux.HandleFunc("DELETE /api/allowlists/{name}/items", s.withAuth(s.handleAllowlistAction("remove")))
 
 	mux.HandleFunc("GET /api/config", s.withAuth(s.handleListConfig))
 	mux.HandleFunc("GET /api/config/{name...}", s.withAuth(s.handleGetConfig))
 	mux.HandleFunc("PUT /api/config/{name...}", s.withAuth(s.handlePutConfig))
 	mux.HandleFunc("POST /api/reload", s.withAuth(s.handleReload))
+	mux.HandleFunc("POST /api/config/check", s.withAuth(s.handleCheckConfig))
 
 	mux.HandleFunc("GET /api/hub", s.withAuth(s.handleHub))
 	mux.HandleFunc("POST /api/hub/update", s.withAuth(s.handleHubAction("update")))

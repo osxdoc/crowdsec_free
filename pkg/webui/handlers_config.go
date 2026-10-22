@@ -163,6 +163,11 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := os.FileMode(0o640)
+	if !s.hubMu.TryLock() {
+		writeError(w, http.StatusConflict, "another engine or allowlist operation is in progress")
+		return
+	}
+	defer s.hubMu.Unlock()
 
 	if stat, err := os.Stat(full); err == nil {
 		mode = stat.Mode().Perm()
@@ -262,6 +267,11 @@ func (s *Server) reloadEngine(ctx context.Context) (string, error) {
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	if !s.hubMu.TryLock() {
+		writeError(w, http.StatusConflict, "another engine or allowlist operation is in progress")
+		return
+	}
+	defer s.hubMu.Unlock()
 	output, err := s.reloadEngine(r.Context())
 	if err != nil {
 		if errors.Is(err, errNoReloadMethod) {

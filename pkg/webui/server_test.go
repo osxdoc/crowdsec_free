@@ -84,6 +84,11 @@ func newTestUI(t *testing.T, mutate func(*Config)) *testUI {
 	t.Helper()
 
 	lapi := newStubLAPI(t)
+	return newTestUIWithLAPI(t, mutate, lapi.URL)
+}
+
+func newTestUIWithLAPI(t *testing.T, mutate func(*Config), lapiURL string) *testUI {
+	t.Helper()
 
 	configDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "acquis.yaml"), []byte("filenames:\n  - /var/log/auth.log\n"), 0o600))
@@ -94,7 +99,7 @@ func newTestUI(t *testing.T, mutate func(*Config)) *testUI {
 
 	cfg := &Config{
 		LAPI: LAPIConfig{
-			URL:      lapi.URL,
+			URL:      lapiURL,
 			Login:    "webui-test",
 			Password: "supersecret",
 		},

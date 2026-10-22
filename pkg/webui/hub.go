@@ -13,6 +13,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/crowdsecurity/go-cs-lib/downloader"
 )
 
 const (
@@ -40,9 +43,12 @@ var hubNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9
 // hubIndexEntry is one item of the downloaded hub index. The dependency lists
 // only appear on collections; the yaml body the index also carries is ignored.
 type hubIndexEntry struct {
-	Path          string   `json:"path"`
-	Stage         string   `json:"stage"`
-	Version       string   `json:"version"`
+	Path     string `json:"path"`
+	Stage    string `json:"stage"`
+	Version  string `json:"version"`
+	Versions map[string]struct {
+		Digest string `json:"digest"`
+	} `json:"versions"`
 	Description   string   `json:"description"`
 	Parsers       []string `json:"parsers"`
 	Scenarios     []string `json:"scenarios"`
@@ -55,13 +61,15 @@ type hubIndexEntry struct {
 
 // hubItem is one entry of the index, annotated with what is on disk.
 type hubItem struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Path        string `json:"path,omitempty"`
-	Installed   bool   `json:"installed"`
-	Enabled     bool   `json:"enabled"`
-	Tainted     bool   `json:"tainted,omitempty"`
+	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
+	Version         string `json:"version,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Installed       bool   `json:"installed"`
+	Enabled         bool   `json:"enabled"`
+	Tainted         bool   `json:"tainted,omitempty"`
+	LocalVersion    string `json:"local_version,omitempty"`
+	UpdateAvailable bool   `json:"update_available"`
 }
 
 type hubCategory struct {
@@ -255,6 +263,9 @@ func (s *Server) handleHub(w http.ResponseWriter, r *http.Request) {
 			if key, err := liveKey(category, entry.Path); err == nil {
 				claimed[key] = true
 				item.Tainted = local[key]
+				if item.Installed || item.Enabled || item.Tainted {
+					s.hubVersion(&item, entry, key)
+				}
 			}
 
 			if category == "collections" {
@@ -316,6 +327,38 @@ func (s *Server) handleHub(w http.ResponseWriter, r *http.Request) {
 	slices.Sort(status.LocalOnly)
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) hubVersion(item *hubItem, entry *hubIndexEntry, livePath string) {
+	path := filepath.Join(s.hubDir(), filepath.FromSlash(entry.Path))
+	if item.Enabled || item.Tainted {
+		path = filepath.Join(s.cfg.Engine.ConfigDir, filepath.FromSlash(livePath))
+	}
+	digest, err := downloader.SHA256(path)
+	if err != nil {
+		return
+	}
+	var local *semver.Version
+	haveDigests := false
+	for version, info := range entry.Versions {
+		haveDigests = haveDigests || info.Digest != ""
+		if info.Digest != digest {
+			continue
+		}
+		parsed, err := semver.NewVersion(version)
+		if err == nil && (local == nil || parsed.GreaterThan(local)) {
+			local = parsed
+			item.LocalVersion = version
+		}
+	}
+	if local == nil {
+		if haveDigests {
+			item.Tainted = true
+		}
+		return
+	}
+	latest, err := semver.NewVersion(entry.Version)
+	item.UpdateAvailable = err == nil && local.LessThan(latest) && !item.Tainted
 }
 
 // dependencies counts what a collection pulls in, so the user can judge what
@@ -413,6 +456,10 @@ func (s *Server) hubActionArgs(action string, req hubActionRequest) ([]string, t
 			return nil, 0, fmt.Errorf("%s/%s is already installed and active", req.Category, req.Name)
 		}
 	case "remove":
+		if !installed && !linked {
+			return nil, 0, fmt.Errorf("%s/%s is not installed", req.Category, req.Name)
+		}
+	case "upgrade":
 		if !installed && !linked {
 			return nil, 0, fmt.Errorf("%s/%s is not installed", req.Category, req.Name)
 		}

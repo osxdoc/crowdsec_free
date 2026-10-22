@@ -7,7 +7,11 @@ const state = {
   route: 'dashboard',
   range: '24h',
   cache: {},
+  hash: '',
+  filters: { alerts: {}, decisions: {}, blocklist: {} },
 };
+
+let viewController = new AbortController();
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -42,7 +46,8 @@ function relTime(iso) {
 /* ---------------- api ---------------- */
 
 async function api(path, options = {}) {
-  const init = { credentials: 'same-origin', headers: { Accept: 'application/json' }, ...options };
+  const init = { credentials: 'same-origin', headers: { Accept: 'application/json' },
+    signal: !options.method || options.method === 'GET' ? viewController.signal : undefined, ...options };
 
   if (init.body !== undefined && typeof init.body !== 'string') {
     init.body = JSON.stringify(init.body);
@@ -55,6 +60,7 @@ async function api(path, options = {}) {
 
   const response = await fetch(path, init);
   const text = await response.text();
+  init.signal?.throwIfAborted();
   let payload = null;
 
   if (text) {
@@ -80,38 +86,56 @@ function toast(message, kind = '') {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
   el.textContent = message;
-  $('#toasts').appendChild(el);
+  const modal = $('#modal-root dialog[open] .modal-body');
+  if (modal) el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  const region = modal || $('#toasts');
+  const existing = $$('.toast', region);
+  if (existing.length >= 3) existing[0].remove();
+  const dismiss = document.createElement('button');
+  dismiss.className = 'close';
+  dismiss.type = 'button';
+  dismiss.setAttribute('aria-label', 'Dismiss notification');
+  dismiss.textContent = '×';
+  dismiss.addEventListener('click', () => el.remove());
+  el.appendChild(dismiss);
+  region.appendChild(el);
   setTimeout(() => el.remove(), 5000);
 }
 
+let modalReturnFocus = null;
+
 function openModal(title, bodyHtml, onMount) {
   const root = $('#modal-root');
+  if (!$('dialog', root)) modalReturnFocus = document.activeElement;
+  $('dialog', root)?.close();
   root.innerHTML = `
-    <div class="overlay" id="overlay">
-      <div class="modal" role="dialog" aria-modal="true">
+      <dialog class="modal" aria-labelledby="modal-title">
         <div class="modal-head">
-          <h3>${esc(title)}</h3>
+          <h3 id="modal-title">${esc(title)}</h3>
           <button class="close" id="modal-close" aria-label="Close">×</button>
         </div>
         <div class="modal-body">${bodyHtml}</div>
-      </div>
-    </div>`;
+      </dialog>`;
 
   $('#modal-close').addEventListener('click', closeModal);
-  $('#overlay').addEventListener('click', (event) => {
-    if (event.target.id === 'overlay') closeModal();
+  const dialog = $('dialog', root);
+  dialog.addEventListener('click', (event) => {
+    const rect = dialog.getBoundingClientRect();
+    if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right ||
+        event.clientY < rect.top || event.clientY > rect.bottom)) closeModal();
   });
-
-  const onKey = (event) => {
-    if (event.key === 'Escape') { closeModal(); document.removeEventListener('keydown', onKey); }
-  };
-  document.addEventListener('keydown', onKey);
+  dialog.addEventListener('cancel', (event) => { event.preventDefault(); closeModal(); });
 
   if (onMount) onMount(root);
+  dialog.showModal();
+  enhanceTables(root);
 }
 
 function closeModal() {
+  $('#modal-root dialog')?.close();
   $('#modal-root').innerHTML = '';
+  if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
+  modalReturnFocus = null;
 }
 
 function fmtDuration(value) {
@@ -141,19 +165,23 @@ function typeBadge(type) {
 }
 
 function spinner() {
-  return '<div class="empty"><span class="spinner"></span></div>';
+  return '<div class="empty" role="status"><span class="spinner" aria-hidden="true"></span><span class="sr-only">Loading…</span></div>';
 }
 
-function errorBox(message) {
-  return `<div class="panel"><div class="panel-body"><p style="color:var(--danger);margin:0">${esc(message)}</p></div></div>`;
+function errorBox(message, retry = false) {
+  return `<div class="panel"><div class="panel-body"><p role="alert" style="color:var(--danger);margin:0">${esc(message)}</p>${retry ? '<button class="btn secondary" data-retry style="margin-top:12px">Try again</button>' : ''}</div></div>`;
 }
 
 /* ---------------- session ---------------- */
 
 function showLogin() {
+  clearTimeout(refreshTimer);
+  clearTimeout(freshnessTimer);
+  closeModal();
   state.user = null;
   $('#app').classList.add('hidden');
   $('#login').classList.remove('hidden');
+  $('#username').focus();
 }
 
 function showApp() {
@@ -174,7 +202,6 @@ async function boot() {
     state.csrf = session.csrf;
     state.session = session;
     showApp();
-    window.addEventListener('hashchange', route);
     route();
   } catch {
     showLogin();
@@ -198,8 +225,7 @@ $('#login-form').addEventListener('submit', async (event) => {
     state.session = session;
     $('#password').value = '';
     showApp();
-    window.addEventListener('hashchange', route);
-    if (!location.hash) location.hash = '#/dashboard';
+    if (!location.hash) history.replaceState(null, '', '#/dashboard');
     route();
   } catch (error) {
     $('#login-error').textContent = error.message;
@@ -209,7 +235,12 @@ $('#login-form').addEventListener('submit', async (event) => {
 });
 
 $('#logout').addEventListener('click', async () => {
+  if (!discardConfigChanges()) return;
   try { await api('/api/logout', { method: 'POST' }); } catch { /* ignore */ }
+  viewController.abort();
+  viewController = new AbortController();
+  $('#view').innerHTML = '';
+  state.filters = { alerts: {}, decisions: {}, blocklist: {} };
   showLogin();
 });
 
@@ -219,6 +250,7 @@ const routes = {
   dashboard: renderDashboard,
   alerts: renderAlerts,
   decisions: renderDecisions,
+  inspect: renderInspect,
   geo: renderGeo,
   infrastructure: renderInfrastructure,
   metrics: renderMetrics,
@@ -228,16 +260,72 @@ const routes = {
   config: renderConfig,
 };
 
+function discardConfigChanges() {
+  return !isDirty() || confirm('Discard unsaved changes?');
+}
+
+document.addEventListener('click', handleConsoleAction);
+
+window.addEventListener('beforeunload', (event) => {
+  if (isDirty()) { event.preventDefault(); event.returnValue = ''; }
+});
+window.addEventListener('hashchange', () => { if (state.user) route(); });
+
+function setNavOpen(open) {
+  $('.sidebar').classList.toggle('nav-open', open);
+  $('#nav-toggle').setAttribute('aria-expanded', String(open));
+}
+
+$('#nav-toggle').addEventListener('click', () => setNavOpen($('#nav-toggle').getAttribute('aria-expanded') !== 'true'));
+$('.sidebar').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { setNavOpen(false); $('#nav-toggle').focus(); }
+});
+$('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#view').focus(); });
+$('#view').addEventListener('click', (event) => {
+  if (event.target.closest('[data-retry]')) { route(); return; }
+  const alert = event.target.closest('[data-alert-id]');
+  if (alert) showAlert(Number(alert.dataset.alertId));
+  const allowlist = event.target.closest('[data-allowlist]');
+  if (allowlist) showAllowlist(allowlist.dataset.allowlist);
+});
+
 function route() {
+  if (!discardConfigChanges()) {
+    history.replaceState(null, '', state.hash || '#/config');
+    return;
+  }
+  clearTimeout(refreshTimer);
+  clearTimeout(freshnessTimer);
+  viewController.abort();
+  viewController = new AbortController();
+  const signal = viewController.signal;
+  closeModal();
+  state.hash = location.hash || '#/dashboard';
   const name = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('?')[0];
   state.route = routes[name] ? name : 'dashboard';
+  state.cache.updatedAt = null;
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (filterFields[state.route] && params.size) {
+    state.filters[state.route] = Object.fromEntries([...params].filter(([key]) => filterFields[state.route].includes(key)));
+  }
+  const navWasOpen = $('#nav-toggle').getAttribute('aria-expanded') === 'true';
+  setNavOpen(false);
+  if (navWasOpen) $('#nav-toggle').focus();
 
   $$('#nav a').forEach((link) => {
     link.classList.toggle('active', link.dataset.route === state.route);
+    if (link.dataset.route === state.route) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
   });
+  document.title = `${$('#nav a.active')?.textContent || 'Dashboard'} · CrowdSec`;
 
-  routes[state.route]().catch((error) => {
-    $('#view').innerHTML = errorBox(error.message);
+  routes[state.route]().then(() => {
+    if (signal.aborted) return;
+    enhanceTables();
+    mountRefresh(state.cache.updatedAt || new Date().toISOString());
+  }).catch((error) => {
+    if (signal.aborted) return;
+    $('#view').innerHTML = errorBox(error.message, true);
   });
 }
 
@@ -254,7 +342,7 @@ async function renderDashboard() {
       </div>
       <div class="toolbar">
         <span class="pill" id="lapi-pill"><span class="dot off"></span> Local API</span>
-        <select id="range">
+        <select id="range" aria-label="Time range">
           ${['1h', '6h', '24h', '7d', '30d'].map((r) => `<option value="${r}" ${r === state.range ? 'selected' : ''}>last ${r}</option>`).join('')}
         </select>
       </div>
@@ -263,11 +351,12 @@ async function renderDashboard() {
 
   $('#range').addEventListener('change', (event) => {
     state.range = event.target.value;
-    renderDashboard();
+    route();
   });
 
   const data = await api(`/api/overview?since=${encodeURIComponent(state.range)}`);
   state.cache.overview = data;
+  state.cache.updatedAt = data.generated_at;
 
   const metrics = data.metrics;
   const db = data.data_sources.db;
@@ -276,21 +365,21 @@ async function renderDashboard() {
     ? '<span class="dot"></span> Local API'
     : '<span class="dot off"></span> Local API unreachable';
 
-  const ko = metrics && metrics.parser_hits > 0
-    ? ((metrics.parser_ko / metrics.parser_hits) * 100).toFixed(1) + '% KO'
+  const ko = metrics && metrics.parser_hits > 0 && (!metrics.present || metrics.present.cs_parser_hits_ko_total)
+    ? ((metrics.parser_ko / metrics.parser_hits) * 100).toFixed(1) + '% unparsed'
     : '';
 
   const cards = [
-    statCard(`Alerts (${state.range})`, fmtNum(data.alerts.total), `${fmtNum(data.alerts.events)} events`),
-    statCard('Unique sources', fmtNum(data.alerts.unique_sources), 'distinct source IPs'),
-    statCard('Active decisions', fmtNum(data.decisions.total), `${fmtNum(data.decisions.simulated)} simulated`),
-    statCard('Machines', `${data.machines.online}/${data.machines.total}`, 'online (< 5 min)'),
-    statCard('Bouncers', `${data.bouncers.active}/${data.bouncers.total}`, 'active (< 5 min)'),
+    statCard(`Alerts (${state.range})`, data.data_sources.alerts === false ? '—' : fmtNum(data.alerts.total), data.data_sources.alerts === false ? 'unavailable' : `${fmtNum(data.alerts.events)} events`),
+    statCard('Unique sources', data.data_sources.alerts === false ? '—' : fmtNum(data.alerts.unique_sources), data.data_sources.alerts === false ? 'unavailable' : 'distinct source IPs'),
+    statCard('Active decisions', data.data_sources.decisions === false ? '—' : fmtNum(data.decisions.total), data.data_sources.decisions === false ? 'unavailable' : data.decision_source === 'api' ? 'from retrieved alerts; may be incomplete' : `${fmtNum(data.decisions.simulated)} simulated`),
+    statCard('Machines', data.data_sources.machines === false ? '—' : `${data.machines.online}/${data.machines.total}`, 'online (< 5 min)'),
+    statCard('Bouncers', data.data_sources.bouncers === false ? '—' : `${data.bouncers.active}/${data.bouncers.total}`, 'active (< 5 min)'),
     data.blocklist
       ? statCard('Shared blocklist', fmtNum(data.blocklist.active_decisions), `${data.blocklist.machines} engine(s)`)
       : '',
     metrics
-      ? statCard('Parsed lines', fmtNum(metrics.parser_hits), ko || 'parser hits')
+      ? statCard('Parser input', metricNumber(metrics, 'parser_hits', 'cs_parser_hits_total'), ko || 'counter since engine reset')
       : '',
   ].filter(Boolean).join('');
 
@@ -311,35 +400,36 @@ async function renderDashboard() {
        </div></div>`;
 
   $('#dashboard-body').innerHTML = `
+    ${renderHealth(data)}
     <div class="cards">${cards}</div>
 
     <div class="grid-2">
       <div class="panel">
         <div class="panel-head"><h3>Alerts over time</h3><span class="hint">${esc(state.range)}</span></div>
         <div class="panel-body">
-          ${renderChart(data.alerts.timeline)}
+          ${data.data_sources.alerts === false ? '<div class="empty">Alert data unavailable</div>' : renderChart(data.alerts.timeline)}
           <div class="chart-legend"><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[0].time) : ''}</span><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[data.alerts.timeline.length - 1].time) : ''}</span></div>
         </div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Top countries</h3><span class="hint">source geo</span></div>
-        <div class="panel-body">${renderCountryList(data.alerts.by_country)}</div>
+        <div class="panel-body">${data.data_sources.alerts === false ? '<div class="empty">Alert data unavailable</div>' : renderCountryList(data.alerts.by_country)}</div>
       </div>
     </div>
 
     <div class="panel map-panel" style="margin-bottom:18px">
       <div class="panel-head"><h3>Where the attacks come from</h3><span class="hint">GeoIP, last ${esc(state.range)}</span></div>
-      <div class="panel-body">${renderWorldMap(data.alerts.geo, data.alerts.by_country)}</div>
+      <div class="panel-body">${data.data_sources.alerts === false ? '<div class="empty">Alert data unavailable</div>' : renderWorldMap(data.alerts.geo, data.alerts.by_country)}</div>
     </div>
 
     <div class="grid-3">
       <div class="panel">
         <div class="panel-head"><h3>Top scenarios</h3></div>
-        <div class="panel-body">${renderBarList(data.alerts.by_scenario)}</div>
+        <div class="panel-body">${renderBarList(data.alerts.by_scenario, ['alerts', 'scenario'])}</div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Decisions by origin</h3></div>
-        <div class="panel-body">${renderBarList(data.decisions.by_origin)}</div>
+        <div class="panel-body">${renderBarList(data.decisions.by_origin, ['decisions', 'origin'])}</div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Top AS</h3></div>
@@ -350,11 +440,11 @@ async function renderDashboard() {
     <div class="grid-2">
       <div class="panel">
         <div class="panel-head"><h3>Machines</h3><a href="#/infrastructure">details</a></div>
-        ${renderMachinesTable(data.machines.items.slice(0, 6))}
+        ${data.data_sources.machines === false ? '<div class="empty">Machine data unavailable</div>' : renderMachinesTable(data.machines.items.slice(0, 6))}
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Bouncers</h3><a href="#/infrastructure">details</a></div>
-        ${renderBouncersTable(data.bouncers.items.slice(0, 6))}
+        ${data.data_sources.bouncers === false ? '<div class="empty">Bouncer data unavailable</div>' : renderBouncersTable(data.bouncers.items.slice(0, 6))}
       </div>
     </div>
 
@@ -362,14 +452,11 @@ async function renderDashboard() {
 
     <div class="panel">
       <div class="panel-head"><h3>Recent alerts</h3><a href="#/alerts">show all</a></div>
-      <div class="table-wrap">${renderAlertsTable(data.recent_alerts, true)}</div>
+      <div class="table-wrap">${data.data_sources.recent_alerts === false ? '<div class="empty">Recent alerts unavailable</div>' : renderAlertsTable(data.recent_alerts, true)}</div>
     </div>
 
     ${!db ? '<p class="hint" style="margin-top:12px">LAPI database not readable: machine/bouncer and geo aggregates are limited. Set <code>data.db_path</code>.</p>' : ''}`;
 
-  $$('#dashboard-body tbody tr[data-alert-id]').forEach((row) => {
-    row.addEventListener('click', () => showAlert(Number(row.dataset.alertId)));
-  });
 }
 
 function statCard(label, value, hint) {
@@ -423,7 +510,7 @@ function renderMachinesTable(machines) {
         <td class="mono" title="${esc(machine.machine_id)}">${esc(shortID(machine.machine_id))}</td>
         <td class="mono">${esc(machine.version || '—')}</td>
         <td>${esc([machine.osname, machine.osversion].filter(Boolean).join(' ') || '—')}</td>
-        <td title="${esc(machine.last_heartbeat || '')}">${machine.last_heartbeat ? relTime(machine.last_heartbeat) : 'never'}</td>
+        <td data-sort="${sortDate(machine.last_heartbeat)}" title="${esc(machine.last_heartbeat || '')}">${machine.last_heartbeat ? relTime(machine.last_heartbeat) : 'never'}</td>
         <td>${statusBadge(machine.last_heartbeat && new Date(machine.last_heartbeat).getTime() > cutoff, 'online', 'idle')}</td>
       </tr>`).join('')}</tbody></table></div>`;
 }
@@ -440,7 +527,7 @@ function renderBouncersTable(bouncers) {
         <td class="mono">${esc(bouncer.name)}</td>
         <td>${esc(bouncer.type || '—')}</td>
         <td class="mono">${esc(bouncer.version || '—')}</td>
-        <td>${bouncer.last_pull ? relTime(bouncer.last_pull) : 'never'}</td>
+        <td data-sort="${sortDate(bouncer.last_pull)}">${bouncer.last_pull ? relTime(bouncer.last_pull) : 'never'}</td>
       </tr>`).join('')}</tbody></table></div>`;
 }
 
@@ -480,14 +567,14 @@ function renderChart(points) {
     </svg>`;
 }
 
-function renderBarList(items) {
+function renderBarList(items, drilldown = null) {
   if (!items || items.length === 0) return '<div class="empty">No data</div>';
 
   const max = Math.max(1, ...items.map((item) => item.count));
 
   return `<div class="bar-list">${items.map((item) => `
     <div class="bar-row">
-      <span class="name" title="${esc(item.name)}">${esc(item.name)}</span>
+      ${drilldown ? `<a class="name" href="${esc(filteredLink(drilldown[0], drilldown[1], item.name))}">${esc(item.name)}</a>` : `<span class="name" title="${esc(item.name)}">${esc(item.name)}</span>`}
       <span class="count">${item.count}</span>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (item.count / max) * 100)}%"></div></div>
     </div>`).join('')}</div>`;
@@ -500,9 +587,9 @@ function renderAlertsTable(alerts, compact = false) {
 
   const rows = alerts.map((alert) => `
     <tr class="clickable" data-alert-id="${alert.id}">
-      <td title="${esc(fmtDate(alert.created_at))}">${esc(relTime(alert.created_at))}</td>
+      <td data-sort="${sortDate(alert.created_at)}" title="${esc(fmtDate(alert.created_at))}">${esc(relTime(alert.created_at))}</td>
       <td class="mono">${esc(alert.scenario)}</td>
-      <td class="mono">${esc(alert.source_ip || alert.source_value)}</td>
+      <td class="mono"><button class="table-link" aria-label="Open alert #${alert.id}: ${esc(alert.source_ip || alert.source_value || 'Details')}">${esc(alert.source_ip || alert.source_value || 'Details')}</button></td>
       <td>${alert.source_country ? `<span class="flag">${flag(alert.source_country)}</span> ${esc(alert.source_country)}` : '—'}</td>
       ${compact ? '' : `<td>${esc(alert.source_scope)}</td>`}
       <td>${alert.decisions}</td>
@@ -534,47 +621,64 @@ async function renderAlerts() {
           <div class="field"><label for="f-limit">Limit</label>
             <select id="f-limit"><option>50</option><option selected>100</option><option>250</option><option>500</option></select>
           </div>
+          <div class="field"><label for="f-since">Period</label><select id="f-since"><option value="">All retained alerts</option><option value="1h">Last hour</option><option value="6h">Last 6 hours</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></div>
+          <div class="field"><label for="f-origin">Decision origin</label><input id="f-origin" type="text" placeholder="cscli, crowdsec, CAPI…"></div>
+          <div class="field"><label for="f-kind">Kind</label><select id="f-kind"><option value="">Any</option><option value="overflow">Overflow</option><option value="appsec">AppSec</option></select></div>
+          <div class="field"><label for="f-include_capi">Shared alerts</label><select id="f-include_capi"><option value="false">Exclude CAPI</option><option value="true">Include CAPI</option></select></div>
           <div class="field" style="display:flex;align-items:flex-end"><button class="btn" type="submit">Filter</button></div>
         </form>
       </div>
     </div>
     <div class="panel"><div id="alerts-body">${spinner()}</div></div>`;
 
+  let loadID = 0;
   const load = async () => {
+    const id = ++loadID;
+    const body = $('#alerts-body');
     const params = new URLSearchParams();
     const scenario = $('#f-scenario').value.trim();
     const ip = $('#f-ip').value.trim();
     if (scenario) params.set('scenario', scenario);
     if (ip) params.set('ip', ip);
     params.set('limit', $('#f-limit').value);
+    ['since', 'origin', 'kind', 'include_capi'].forEach((key) => {
+      const value = $(`#f-${key}`)?.value;
+      if (value) params.set(key, value);
+    });
+    rememberFilters('alerts', params);
 
     $('#alerts-body').innerHTML = spinner();
 
-    const data = await api(`/api/alerts?${params}`);
-    state.cache.alerts = data.alerts;
-
-    $('#alerts-body').innerHTML = data.alerts.length
-      ? `<div class="table-wrap">${renderAlertsTable(data.alerts)}</div>`
-      : '<div class="empty">No alerts match the filter</div>';
-
-    $$('#alerts-body tbody tr[data-alert-id]').forEach((row) => {
-      row.addEventListener('click', () => showAlert(Number(row.dataset.alertId)));
-    });
+    try {
+      const data = await api(`/api/alerts?${params}`);
+      if (id !== loadID || !body.isConnected) return;
+      state.cache.alerts = data.alerts;
+      body.innerHTML = resultCount(data.alerts.length, Number(params.get('limit'))) + (data.alerts.length
+        ? `<div class="table-wrap">${renderAlertsTable(data.alerts)}</div>`
+        : '<div class="empty">No alerts match the filter</div>');
+      enhanceTables(body);
+      mountRefresh(data.generated_at || new Date().toISOString());
+    } catch (error) {
+      if (id === loadID && body.isConnected && error.name !== 'AbortError') body.innerHTML = errorBox(error.message, true);
+    }
   };
 
   $('#alert-filters').addEventListener('submit', (event) => {
     event.preventDefault();
-    load().catch((error) => toast(error.message, 'error'));
+    load();
   });
 
+  Object.entries(state.filters.alerts).forEach(([key, value]) => { const input = $(`#f-${key}`); if (input) input.value = value; });
   await load();
 }
 
 async function showAlert(id) {
   openModal('Alert', spinner());
+  const modal = $('#modal-root dialog');
 
   try {
     const alert = await api(`/api/alerts/${id}`);
+    if (!modal.isConnected) return;
     const decisions = (alert.decisions || []).map((decision) => `
       <tr>
         <td class="mono">${esc(decision.value)}</td>
@@ -606,25 +710,31 @@ async function showAlert(id) {
       <h4 style="margin:18px 0 8px">Events</h4>
       <pre class="json">${esc(JSON.stringify(alert.events || [], null, 2))}</pre>
       <div class="form-actions" style="justify-content:flex-end">
+        ${source.ip ? `<button class="btn secondary" data-inspect-ip="${esc(source.ip)}">Inspect IP</button>` : ''}
         <button class="btn secondary" id="alert-close">Close</button>
         <button class="btn danger" id="alert-delete">Delete alert</button>
       </div>`);
 
     $('#alert-close').addEventListener('click', closeModal);
 
-    $('#alert-delete').addEventListener('click', async () => {
+    $('#alert-delete').addEventListener('click', async (event) => {
       if (!confirm(`Delete alert #${id}?`)) return;
+      const button = event.currentTarget;
+      const dialog = button.closest('dialog');
+      button.disabled = true;
 
       try {
         await api(`/api/alerts/${id}`, { method: 'DELETE' });
-        closeModal();
+        if (dialog.isConnected) { closeModal(); route(); }
         toast('Alert deleted', 'ok');
-        route();
       } catch (error) {
         toast(error.message, 'error');
+      } finally {
+        button.disabled = false;
       }
     });
   } catch (error) {
+    if (!modal.isConnected || error.name === 'AbortError') return;
     openModal('Alert', errorBox(error.message));
   }
 }
@@ -648,79 +758,98 @@ async function renderDecisions() {
           <div class="field"><label for="d-type">Type</label>
             <select id="d-type"><option value="">any</option><option>ban</option><option>captcha</option></select>
           </div>
+          <div class="field"><label for="d-origin">Origin</label><input id="d-origin" type="text" placeholder="cscli, crowdsec, CAPI…"></div>
+          <div class="field"><label for="d-scenario">Scenario</label><input id="d-scenario" type="text"></div>
+          <div class="field"><label for="d-scope">Scope</label><select id="d-scope"><option value="">Any</option><option>ip</option><option>range</option></select></div>
+          <div class="field"><label for="d-limit">Alert retrieval limit</label><select id="d-limit"><option>100</option><option selected>500</option><option>1000</option><option>5000</option></select></div>
           <div class="field" style="display:flex;align-items:flex-end"><button class="btn" type="submit">Filter</button></div>
         </form>
       </div>
     </div>
     <div class="panel"><div id="decisions-body">${spinner()}</div></div>`;
 
+  let loadID = 0;
   const load = async () => {
+    const id = ++loadID;
+    const body = $('#decisions-body');
     const params = new URLSearchParams();
-    [['ip', '#d-ip'], ['range', '#d-range'], ['value', '#d-value'], ['type', '#d-type']].forEach(([key, sel]) => {
-      const value = $(sel).value.trim();
+    filterFields.decisions.map((key) => [key, `#d-${key}`]).forEach(([key, sel]) => {
+      const value = $(sel)?.value.trim();
       if (value) params.set(key, value);
     });
+    rememberFilters('decisions', params);
 
     $('#decisions-body').innerHTML = spinner();
 
-    const data = await api(`/api/decisions?${params}`);
-    $('#decisions-body').innerHTML = renderDecisionsTable(data.decisions);
+    try {
+      const data = await api(`/api/decisions?${params}`);
+      if (id !== loadID || !body.isConnected) return;
+      body.innerHTML = renderDecisionsTable(data.decisions) + resultCount(data.decisions.length, data.alert_limit || Number(params.get('limit')) || 500, data.limited || false);
+      enhanceTables(body);
+      mountRefresh(data.generated_at || new Date().toISOString());
 
-    $$('#decisions-body tr[data-decision-id]').forEach((row) => {
-      const button = $('button[data-delete]', row);
-      if (button) {
-        button.addEventListener('click', async (event) => {
-          event.stopPropagation();
-          await deleteDecision(Number(row.dataset.decisionId), row.dataset.origin);
-        });
-      }
-    });
+      $$('#decisions-body tr[data-decision-id]').forEach((row) => {
+        const button = $('button[data-delete]', row);
+        if (button) {
+          button.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            await deleteDecision(Number(row.dataset.decisionId), row.dataset.origin, load, button);
+          });
+        }
+      });
+    } catch (error) {
+      if (id === loadID && body.isConnected && error.name !== 'AbortError') body.innerHTML = errorBox(error.message, true);
+    }
   };
 
   $('#decision-filters').addEventListener('submit', (event) => {
     event.preventDefault();
-    load().catch((error) => toast(error.message, 'error'));
+    load();
   });
 
   $('#add-decision').addEventListener('click', () => showDecisionForm('local', load));
 
+  Object.entries(state.filters.decisions).forEach(([key, value]) => { const input = $(`#d-${key}`); if (input) input.value = value; });
   await load();
 }
 
-function renderDecisionsTable(decisions) {
+function renderDecisionsTable(decisions, actionable = true) {
   if (!decisions || decisions.length === 0) return '<div class="empty">No decisions</div>';
 
   const rows = decisions.map((decision) => `
     <tr data-decision-id="${decision.id}" data-origin="${esc(decision.origin)}">
-      <td class="mono">${esc(decision.value)}</td>
+      <td class="mono">${decision.scope === 'ip' ? `<button class="table-link" data-inspect-ip="${esc(decision.value)}">${esc(decision.value)}</button>` : esc(decision.value)}</td>
       <td>${esc(decision.scope)}</td>
       <td>${decision.country ? `<span class="flag">${flag(decision.country)}</span> ${esc(decision.country)}` : '—'}</td>
       <td class="mono" title="${esc(decision.as_name || '')}">${esc(decision.as_name || '—')}</td>
       <td>${typeBadge(decision.type)}${decision.simulated ? ' ' + badge('simulated', 'sim') : ''}</td>
-      <td class="mono">${esc(fmtDuration(decision.duration))}</td>
+      <td class="mono" data-sort="${sortDate(decision.until)}">${esc(fmtDuration(decision.duration))}</td><td class="mono" data-sort="${sortDate(decision.until)}">${esc(fmtDate(decision.until))}</td>
       <td class="mono">${esc(decision.scenario)}</td>
       <td class="mono">${esc(decision.origin)}</td>
-      <td><button class="btn danger" data-delete style="padding:4px 9px;font-size:12px">Unban</button></td>
+      <td>${decision.alert_id ? `<button class="table-link" data-alert-id="${decision.alert_id}">Alert #${decision.alert_id}</button>` : '—'}</td>${actionable ? '<td><button class="btn danger" data-delete style="padding:4px 9px;font-size:12px">Unban</button></td>' : ''}
     </tr>`).join('');
 
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Value</th><th>Scope</th><th>Country</th><th>AS</th><th>Type</th><th>Remaining</th><th>Scenario</th><th>Origin</th><th></th></tr></thead>
+    <thead><tr><th>Value</th><th>Scope</th><th>Country</th><th>AS</th><th>Type</th><th>Remaining</th><th>Until</th><th>Scenario</th><th>Origin</th><th>Alert</th>${actionable ? '<th></th>' : ''}</tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
-async function deleteDecision(id, origin) {
+async function deleteDecision(id, origin, onDone, button) {
   const message = origin === 'CAPI' || origin === 'lists'
     ? 'Delete this shared blocklist entry? It is re-added on the next pull unless it is removed on the blocklist server.'
     : 'Delete this decision?';
 
   if (!confirm(message)) return;
+  button.disabled = true;
 
   try {
     await api(`/api/decisions/${id}`, { method: 'DELETE' });
     toast('Decision deleted', 'ok');
-    route();
+    if (button.isConnected) await onDone();
   } catch (error) {
-    toast(error.message, 'error');
+    if (error.name !== 'AbortError') toast(error.message, 'error');
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -730,7 +859,7 @@ function showDecisionForm(target, onDone) {
   openModal(title, `
     <form id="decision-form">
       <div class="form-grid">
-        <div class="field"><label for="n-value">IP or range</label><input id="n-value" type="text" placeholder="1.2.3.4" required></div>
+        <div class="field"><label for="n-value">IP or range</label><input id="n-value" type="text" placeholder="1.2.3.4" required autofocus></div>
         <div class="field"><label for="n-scope">Scope</label>
           <select id="n-scope"><option value="ip">ip</option><option value="range">range</option></select>
         </div>
@@ -749,6 +878,10 @@ function showDecisionForm(target, onDone) {
 
     $('#decision-form').addEventListener('submit', async (event) => {
       event.preventDefault();
+      const button = $('button[type="submit"]', event.currentTarget);
+      const dialog = event.currentTarget.closest('dialog');
+      if (button.disabled) return;
+      button.disabled = true;
 
       const body = {
         value: $('#n-value').value.trim(),
@@ -762,11 +895,13 @@ function showDecisionForm(target, onDone) {
 
       try {
         await api(path, { method: 'POST', body });
-        closeModal();
+        if (dialog.isConnected) closeModal();
         toast(target === 'local' ? 'Decision created' : 'Decision shared', 'ok');
-        if (onDone) onDone();
+        if (onDone && state.route === (target === 'local' ? 'decisions' : 'blocklist')) await onDone();
       } catch (error) {
-        toast(error.message, 'error');
+        if (error.name !== 'AbortError') toast(error.message, 'error');
+      } finally {
+        button.disabled = false;
       }
     });
   });
@@ -778,10 +913,11 @@ async function renderAllowlists() {
   const view = $('#view');
 
   view.innerHTML =
-    `<div class="page-header"><div><h2>Allowlists</h2><p>Never ban these values.</p></div></div>
+    `<div class="page-header"><div><h2>Allowlists</h2><p>Never ban these values.</p></div><div class="toolbar"><button class="btn" data-allowlist-create>Create allowlist</button></div></div>
      <div class="panel"><div id="allowlists-body">${spinner()}</div></div>`;
 
   const data = await api('/api/allowlists');
+  state.cache.updatedAt = data.generated_at;
 
   if (!data.allowlists.length) {
     $('#allowlists-body').innerHTML = '<div class="empty">No allowlists configured</div>';
@@ -792,29 +928,28 @@ async function renderAllowlists() {
       <thead><tr><th>Name</th><th>Description</th><th>Items</th><th>Managed by console</th></tr></thead>
       <tbody>${data.allowlists.map((list) => `
         <tr class="clickable" data-allowlist="${esc(list.name)}">
-          <td class="mono">${esc(list.name)}</td>
+          <td class="mono"><button class="table-link">${esc(list.name)}</button></td>
           <td class="wrap">${esc(list.description)}</td>
           <td>${(list.items || []).length}</td>
           <td>${list.console_managed ? 'yes' : 'no'}</td>
         </tr>`).join('')}</tbody>
     </table></div>`;
 
-  $$('tr[data-allowlist]').forEach((row) => {
-    row.addEventListener('click', () => showAllowlist(row.dataset.allowlist));
-  });
 }
 
 async function showAllowlist(name) {
   openModal(`Allowlist ${name}`, spinner());
+  const modal = $('#modal-root dialog');
 
   try {
     const allowlist = await api(`/api/allowlists/${encodeURIComponent(name)}`);
+    if (!modal.isConnected) return;
 
     const items = (allowlist.items || []).map((item) => `
       <tr>
         <td class="mono">${esc(item.value)}</td>
         <td class="wrap">${esc(item.description)}</td>
-        <td class="mono">${esc(item.expiration)}</td>
+        <td class="mono" data-sort="${sortDate(item.expiration)}">${!item.expiration || item.expiration.startsWith('0001') ? 'permanent' : esc(fmtDate(item.expiration))}</td>${allowlist.console_managed ? '' : `<td><button class="btn danger" data-allowlist-remove data-allowlist-name="${esc(name)}" data-allowlist-value="${esc(item.value)}">Remove</button></td>`}
       </tr>`).join('');
 
     openModal(`Allowlist ${name}`, `
@@ -824,9 +959,11 @@ async function showAllowlist(name) {
         <dt>Items</dt><dd>${(allowlist.items || []).length}</dd>
       </dl>
       ${items ? `<div class="table-wrap"><table>
-        <thead><tr><th>Value</th><th>Description</th><th>Expiration</th></tr></thead>
-        <tbody>${items}</tbody></table></div>` : '<div class="empty">No items</div>'}`);
+        <thead><tr><th>Value</th><th>Description</th><th>Expiration</th>${allowlist.console_managed ? '' : '<th></th>'}</tr></thead>
+        <tbody>${items}</tbody></table></div>` : '<div class="empty">No items</div>'}
+      ${allowlist.console_managed ? '<p class="hint">Managed by the CrowdSec Console; local editing is disabled.</p>' : `<div class="form-actions"><button class="btn" data-allowlist-add="${esc(name)}">Add entry</button><button class="btn danger" data-allowlist-remove data-allowlist-name="${esc(name)}">Delete allowlist</button></div>`}`);
   } catch (error) {
+    if (!modal.isConnected || error.name === 'AbortError') return;
     openModal(`Allowlist ${name}`, errorBox(error.message));
   }
 }
@@ -835,12 +972,18 @@ async function showAllowlist(name) {
 
 async function renderBlocklist() {
   const view = $('#view');
+  const signal = viewController.signal;
 
   view.innerHTML = `
     <div class="page-header">
       <div><h2>Shared blocklist</h2><p>Decisions exchanged through your own blocklist server.</p></div>
       <div class="toolbar"><button class="btn" id="share-decision">Share decision</button></div>
     </div>
+    <div class="panel" style="margin-bottom:14px"><div class="panel-body"><form id="blocklist-filters" class="form-grid">
+      <div class="field"><label for="bl-value">Value</label><input id="bl-value" type="text"></div>
+      <div class="field"><label for="bl-scenario">Scenario</label><input id="bl-scenario" type="text"></div>
+      <div class="field"><label for="bl-limit">Limit</label><select id="bl-limit"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></div>
+      <button class="btn" type="submit">Filter</button></form></div></div>
     <div id="blocklist-stats" class="cards"></div>
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-head"><h3>Entries</h3><span class="hint" id="blocklist-count"></span></div>
@@ -851,16 +994,25 @@ async function renderBlocklist() {
       <div id="blocklist-machines">${spinner()}</div>
     </div>`;
 
-  $('#share-decision').addEventListener('click', () => showDecisionForm('blocklist', renderBlocklist));
+  $('#share-decision').addEventListener('click', () => showDecisionForm('blocklist', async () => route()));
+  Object.entries(state.filters.blocklist || {}).forEach(([key, value]) => { const input = $(`#bl-${key}`); if (input) input.value = value; });
+  const filters = new URLSearchParams(state.filters.blocklist || {});
+  $('#blocklist-filters')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const params = new URLSearchParams();
+    filterFields.blocklist.forEach((key) => { const value = $(`#bl-${key}`).value.trim(); if (value) params.set(key, value); });
+    rememberFilters('blocklist', params); route();
+  });
 
   const [stats, decisions, machines] = await Promise.all([
     api('/api/blocklist/stats').catch((error) => ({ error: error.message })),
-    api('/api/blocklist/decisions').catch((error) => ({ error: error.message })),
+    api(`/api/blocklist/decisions?${filters}`).catch((error) => ({ error: error.message })),
     api('/api/blocklist/machines').catch((error) => ({ error: error.message })),
   ]);
+  signal.throwIfAborted();
 
   if (stats.error) {
-    $('#blocklist-stats').innerHTML = errorBox(stats.error);
+    $('#blocklist-stats').innerHTML = errorBox(stats.error, true);
   } else {
     $('#blocklist-stats').innerHTML = `
       <div class="card"><div class="label">Entries</div><div class="value">${stats.active_decisions}</div></div>
@@ -874,29 +1026,32 @@ async function renderBlocklist() {
       <td>${esc(decision.scope)}</td>
       <td class="mono">${esc(decision.scenario)}</td>
       <td class="mono">${esc(fmtDuration(decision.duration))}</td>
-      <td class="mono">${esc(fmtDate(decision.until))}</td>
+      <td class="mono" data-sort="${sortDate(decision.until)}">${esc(fmtDate(decision.until))}</td>
       <td>${esc(decision.source)}</td>
       <td><button class="btn danger" data-blocklist-id="${decision.id}" style="padding:4px 9px;font-size:12px">Remove</button></td>
     </tr>`).join('');
 
-  $('#blocklist-decisions').innerHTML = entries
+  $('#blocklist-decisions').innerHTML = decisions.error ? errorBox(decisions.error, true) : entries
     ? `<div class="table-wrap"><table>
         <thead><tr><th>Value</th><th>Scope</th><th>Scenario</th><th>Duration</th><th>Until</th><th>Source</th><th></th></tr></thead>
         <tbody>${entries}</tbody></table></div>`
     : '<div class="empty">No shared decisions</div>';
 
-  $('#blocklist-count').textContent = `${(decisions.decisions || []).length} shown`;
+  $('#blocklist-count').textContent = decisions.error ? 'Unavailable' : `${(decisions.decisions || []).length} shown · limit ${filters.get('limit') || 200}${(decisions.decisions || []).length >= Number(filters.get('limit') || 200) ? ' · limit reached' : ''}`;
 
   $$('button[data-blocklist-id]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!confirm('Remove this entry from the shared blocklist?')) return;
+      button.disabled = true;
 
       try {
         await api(`/api/blocklist/decisions/${button.dataset.blocklistId}`, { method: 'DELETE' });
         toast('Entry removed', 'ok');
-        renderBlocklist();
+        if (!signal.aborted) route();
       } catch (error) {
         toast(error.message, 'error');
+      } finally {
+        button.disabled = false;
       }
     });
   });
@@ -905,10 +1060,10 @@ async function renderBlocklist() {
     <tr>
       <td class="mono">${esc(machine.machine_id)}</td>
       <td>${esc(machine.last_ip)}</td>
-      <td>${esc(machine.last_seen && !machine.last_seen.startsWith('0001') ? relTime(machine.last_seen) : 'never')}</td>
+      <td data-sort="${sortDate(machine.last_seen)}">${esc(machine.last_seen && !machine.last_seen.startsWith('0001') ? relTime(machine.last_seen) : 'never')}</td>
     </tr>`).join('');
 
-  $('#blocklist-machines').innerHTML = engineRows
+  $('#blocklist-machines').innerHTML = machines.error ? errorBox(machines.error, true) : engineRows
     ? `<div class="table-wrap"><table><thead><tr><th>Machine</th><th>Last IP</th><th>Last seen</th></tr></thead><tbody>${engineRows}</tbody></table></div>`
     : '<div class="empty">No engine registered yet</div>';
 }
@@ -919,12 +1074,14 @@ let currentConfig = { name: null, content: '' };
 
 async function renderConfig() {
   const view = $('#view');
+  const selectedName = currentConfig.name;
+  currentConfig = { name: null, content: '' };
 
   view.innerHTML = `
     <div class="page-header">
       <div><h2>Configuration</h2><p>Edit the engine configuration and reload it.</p></div>
       <div class="toolbar">
-        <button class="btn secondary" id="config-reload">Reload engine</button>
+        <button class="btn secondary" id="config-check">Check saved config</button><button class="btn secondary" id="config-reload">Reload engine</button>
       </div>
     </div>
     <div class="split">
@@ -938,10 +1095,10 @@ async function renderConfig() {
           <span class="hint" id="config-meta"></span>
         </div>
         <div class="panel-body">
-          <textarea class="editor" id="config-editor" spellcheck="false" placeholder="Choose a file on the left"></textarea>
+          <textarea class="editor" id="config-editor" aria-labelledby="config-title" spellcheck="false" placeholder="Choose a file on the left" disabled></textarea>
           <div class="editor-actions">
-            <span class="hint" id="config-status"></span>
-            <button class="btn" id="config-save" disabled>Save</button>
+            <span class="hint" id="config-status" role="status"></span>
+            <button class="btn secondary" data-config-preview>Review changes</button><button class="btn" id="config-save" disabled>Save</button>
           </div>
         </div>
       </div>
@@ -957,50 +1114,66 @@ async function renderConfig() {
 
   $$('#config-files button').forEach((button) => {
     button.addEventListener('click', () => {
-      loadConfigFile(button.dataset.file).catch((error) => toast(error.message, 'error'));
+      loadConfigFile(button.dataset.file).catch((error) => { if (error.name !== 'AbortError') toast(error.message, 'error'); });
     });
   });
 
   $('#config-save').addEventListener('click', saveConfigFile);
+  $('#config-check').addEventListener('click', checkSavedConfig);
+  $('#config-editor').addEventListener('input', () => {
+    $('#config-save').disabled = !isDirty();
+    $('#config-reload').disabled = isDirty();
+    $('#config-check').disabled = isDirty();
+    $('#config-status').textContent = isDirty() ? 'Unsaved changes · save before reloading' : '';
+  });
 
   $('#config-reload').addEventListener('click', async () => {
+    const button = $('#config-reload');
+    button.disabled = true;
     try {
       const result = await api('/api/reload', { method: 'POST' });
       toast(result.output || result.message, 'ok');
     } catch (error) {
       toast(error.message, 'error');
+    } finally {
+      button.disabled = isDirty();
     }
   });
 
-  if (!currentConfig.name && data.files.length > 0) {
+  if (selectedName && data.files.some((file) => file.name === selectedName)) {
+    await loadConfigFile(selectedName);
+  } else if (data.files.length > 0) {
     const first = data.files.find((file) => file.exists) || data.files[0];
     await loadConfigFile(first.name);
-  } else if (currentConfig.name) {
-    await loadConfigFile(currentConfig.name);
   }
 }
 
 async function loadConfigFile(name) {
-  if (currentConfig.name !== name && isDirty() && !confirm('Discard unsaved changes?')) return;
+  if (!discardConfigChanges()) return;
 
-  const file = await api(`/api/config/${encodeURIComponent(name).replace(/%2F/g, '/')}`);
-
-  currentConfig = { name, content: file.content || '' };
-
-  $('#config-editor').value = currentConfig.content;
-  $('#config-title').textContent = name;
-  $('#config-meta').textContent = `${file.size} bytes · ${fmtDate(file.modified)}`;
+  const editor = $('#config-editor');
+  const buttons = $$('#config-files button');
+  editor.disabled = true;
   $('#config-save').disabled = true;
-  $('#config-status').textContent = '';
+  buttons.forEach((button) => { button.disabled = true; });
 
-  $$('#config-files button').forEach((button) => {
-    button.classList.toggle('active', button.dataset.file === name);
-  });
+  try {
+    const file = await api(`/api/config/${encodeURIComponent(name).replace(/%2F/g, '/')}`);
+    currentConfig = { name, content: file.content || '' };
 
-  $('#config-editor').addEventListener('input', () => {
-    $('#config-save').disabled = !isDirty();
-    $('#config-status').textContent = isDirty() ? 'unsaved changes' : '';
-  }, { once: false });
+    editor.value = currentConfig.content;
+    $('#config-title').textContent = name;
+    $('#config-meta').textContent = `${file.size} bytes · ${fmtDate(file.modified)}`;
+    $('#config-status').textContent = '';
+    $('#config-reload').disabled = false;
+    if ($('#config-check')) $('#config-check').disabled = false;
+
+    buttons.forEach((button) => { button.classList.toggle('active', button.dataset.file === name); });
+  } finally {
+    editor.disabled = !currentConfig.name;
+    buttons.forEach((button) => { button.disabled = false; });
+    if (editor.isConnected) $('#config-save').disabled = !isDirty();
+  }
 }
 
 function isDirty() {
@@ -1012,19 +1185,34 @@ async function saveConfigFile() {
   if (!currentConfig.name) return;
 
   const button = $('#config-save');
+  const editor = $('#config-editor');
+  const name = currentConfig.name;
+  const content = editor.value;
+  const fileButtons = $$('#config-files button');
   button.disabled = true;
+  editor.disabled = true;
+  fileButtons.forEach((item) => { item.disabled = true; });
+  $('#config-reload').disabled = true;
 
   try {
-    await api(`/api/config/${encodeURIComponent(currentConfig.name).replace(/%2F/g, '/')}`, {
+    await api(`/api/config/${encodeURIComponent(name).replace(/%2F/g, '/')}`, {
       method: 'PUT',
-      body: { content: $('#config-editor').value },
+      body: { content },
     });
-    currentConfig.content = $('#config-editor').value;
-    $('#config-status').textContent = 'saved';
+    if (!editor.isConnected) return;
+    currentConfig.content = content;
+    $('#config-status').textContent = 'Saved · reload the engine to apply';
     toast('Configuration saved. Reload the engine to apply it.', 'ok');
   } catch (error) {
     toast(error.message, 'error');
-    button.disabled = false;
+  } finally {
+    editor.disabled = false;
+    fileButtons.forEach((item) => { item.disabled = false; });
+    if (editor.isConnected) {
+      button.disabled = !isDirty();
+      $('#config-reload').disabled = isDirty();
+      if ($('#config-check')) $('#config-check').disabled = isDirty();
+    }
   }
 }
 
@@ -1111,7 +1299,7 @@ async function renderGeo() {
     <div class="page-header">
       <div><h2>Geo</h2><p>Where the detected sources are located.</p></div>
       <div class="toolbar">
-        <select id="geo-range">
+        <select id="geo-range" aria-label="Time range">
           ${['6h', '24h', '7d', '30d'].map((r) => `<option value="${r}" ${r === state.range ? 'selected' : ''}>last ${r}</option>`).join('')}
         </select>
       </div>
@@ -1120,7 +1308,7 @@ async function renderGeo() {
 
   $('#geo-range').addEventListener('change', (event) => {
     state.range = event.target.value;
-    renderGeo();
+    route();
   });
 
   const data = await api(`/api/overview?since=${encodeURIComponent(state.range)}`);
@@ -1170,11 +1358,17 @@ async function renderInfrastructure() {
     <div id="infra-body">${spinner()}</div>`;
 
   const infra = await api('/api/infra');
+  state.cache.updatedAt = infra.generated_at;
+  infra.machines ||= [];
+  infra.bouncers ||= [];
+  const machinesAvailable = infra.db && infra.available?.machines !== false;
+  const bouncersAvailable = infra.db && infra.available?.bouncers !== false;
   let metrics = null;
 
   try {
     metrics = (await api('/api/metrics')).summary;
-  } catch {
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
     metrics = null;
   }
 
@@ -1188,7 +1382,7 @@ async function renderInfrastructure() {
       <td class="mono">${esc(machine.version || '—')}</td>
       <td>${esc([machine.osname, machine.osversion].filter(Boolean).join(' ') || '—')}</td>
       <td title="${esc(machine.scenarios || '')}">${(machine.scenarios || '').split(',').filter(Boolean).length}</td>
-      <td>${machine.last_heartbeat ? relTime(machine.last_heartbeat) : 'never'}</td>
+      <td data-sort="${sortDate(machine.last_heartbeat)}">${machine.last_heartbeat ? relTime(machine.last_heartbeat) : 'never'}</td>
       <td class="mono">${esc(machine.ip_address || '—')}</td>
       <td>${machine.validated ? '<span class="badge ok">valid</span>' : '<span class="badge">pending</span>'}</td>
     </tr>`).join('');
@@ -1200,7 +1394,7 @@ async function renderInfrastructure() {
       <td class="mono">${esc(bouncer.version || '—')}</td>
       <td>${esc([bouncer.osname, bouncer.osversion].filter(Boolean).join(' ') || '—')}</td>
       <td class="mono">${esc(bouncer.ip_address || '—')}</td>
-      <td>${bouncer.last_pull ? relTime(bouncer.last_pull) : 'never'}</td>
+      <td data-sort="${sortDate(bouncer.last_pull)}">${bouncer.last_pull ? relTime(bouncer.last_pull) : 'never'}</td>
       <td>${bouncer.revoked ? '<span class="badge ban">revoked</span>' : statusBadge(bouncer.last_pull && new Date(bouncer.last_pull).getTime() > cutoff, 'active', 'idle')}</td>
     </tr>`).join('');
 
@@ -1210,22 +1404,22 @@ async function renderInfrastructure() {
 
   $('#infra-body').innerHTML = `
     <div class="cards">
-      ${statCard('Machines', `${machinesOnline}/${infra.machines.length}`, 'online (< 5 min)')}
-      ${statCard('Bouncers', `${bouncersActive}/${infra.bouncers.length}`, 'active (< 5 min)')}
-      ${metrics ? statCard('LAPI requests', fmtNum(metrics.lapi_requests), 'total since start') : ''}
-      ${metrics ? statCard('Bouncer requests', fmtNum(metrics.bouncer_requests), 'total since start') : ''}
+      ${statCard('Machines', machinesAvailable ? `${machinesOnline}/${infra.machines.length}` : '—', 'online (< 5 min)')}
+      ${statCard('Bouncers', bouncersAvailable ? `${bouncersActive}/${infra.bouncers.length}` : '—', 'active (< 5 min)')}
+      ${metrics ? statCard('LAPI requests', metricNumber(metrics, 'lapi_requests', 'cs_lapi_route_requests_total'), 'counter since reset') : ''}
+      ${metrics ? statCard('Bouncer requests', metricNumber(metrics, 'bouncer_requests', 'cs_lapi_bouncer_requests_total'), 'counter since reset') : ''}
     </div>
 
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-head"><h3>Machines</h3><span class="hint">${infra.db ? 'from the LAPI database' : 'database not readable'}</span></div>
-      ${infra.machines.length ? `<div class="table-wrap"><table>
+      ${!machinesAvailable ? errorBox(infra.errors?.machines || 'Machine data unavailable: configure a readable SQLite database.') : infra.machines.length ? `<div class="table-wrap"><table>
         <thead><tr><th>Machine</th><th>Version</th><th>OS</th><th>Scenarios</th><th>Last seen</th><th>IP</th><th>State</th></tr></thead>
         <tbody>${machineRows}</tbody></table></div>` : '<div class="empty">No machines registered</div>'}
     </div>
 
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-head"><h3>Bouncers</h3></div>
-      ${infra.bouncers.length ? `<div class="table-wrap"><table>
+      ${!bouncersAvailable ? errorBox(infra.errors?.bouncers || 'Bouncer data unavailable: configure a readable SQLite database.') : infra.bouncers.length ? `<div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Type</th><th>Version</th><th>OS</th><th>IP</th><th>Last pull</th><th>State</th></tr></thead>
         <tbody>${bouncerRows}</tbody></table></div>` : '<div class="empty">No bouncers registered</div>'}
     </div>
@@ -1258,7 +1452,7 @@ async function renderMetrics() {
 
   view.innerHTML = `
     <div class="page-header">
-      <div><h2>Metrics</h2><p>Prometheus counters exported by the engine.</p></div>
+      <div><h2>Metrics</h2><p>Prometheus counters since the engine last reset them. Unparsed lines can be normal and are not automatically parser errors.</p></div>
       <div class="toolbar"><span class="hint" id="metrics-fetched"></span></div>
     </div>
     <div id="metrics-body">${spinner()}</div>`;
@@ -1268,27 +1462,29 @@ async function renderMetrics() {
   try {
     data = await api('/api/metrics');
   } catch (error) {
-    $('#metrics-body').innerHTML = errorBox(`Could not scrape metrics: ${error.message}. Enable prometheus in config.yaml and check data.metrics_url.`);
+    if (error.name === 'AbortError') throw error;
+    $('#metrics-body').innerHTML = errorBox(`Could not scrape metrics: ${error.message}. Enable prometheus in config.yaml and check data.metrics_url.`, true);
     return;
   }
 
+  state.cache.updatedAt = data.fetched_at;
   const m = data.summary;
   $('#metrics-fetched').textContent = `${data.samples} series · ${relTime(data.fetched_at)}`;
 
-  const koRate = m.parser_hits > 0 ? ((m.parser_ko / m.parser_hits) * 100).toFixed(1) : '0.0';
+  const koRate = m.parser_hits > 0 && (!m.present || m.present.cs_parser_hits_ko_total) ? ((m.parser_ko / m.parser_hits) * 100).toFixed(1) : null;
   const avgParse = m.avg_parse_ms != null ? `${m.avg_parse_ms.toFixed(2)} ms` : '—';
-  const lastPull = m.capi_last_pull ? relTime(m.capi_last_pull) : 'never';
+  const lastPull = m.capi_last_pull ? relTime(m.capi_last_pull) : m.present && !m.present.cs_capi_last_pull_timestamp ? '—' : 'never';
 
   $('#metrics-body').innerHTML = `
     <div class="cards">
-      ${statCard('Parser hits', fmtNum(m.parser_hits), 'lines entering parsing')}
-      ${statCard('Parsed OK', fmtNum(m.parser_ok), 'successfully parsed')}
-      ${statCard('Parse errors', fmtNum(m.parser_ko), `${koRate}% of hits`)}
+      ${statCard('Parser hits', metricNumber(m, 'parser_hits', 'cs_parser_hits_total'), 'lines entering parsing')}
+      ${statCard('Parsed OK', metricNumber(m, 'parser_ok', 'cs_parser_hits_ok_total'), 'successfully parsed')}
+      ${statCard('Unparsed lines', metricNumber(m, 'parser_ko', 'cs_parser_hits_ko_total'), koRate == null ? 'percentage unavailable' : `${koRate}% of hits`)}
       ${statCard('Avg parse time', avgParse, 'per line')}
-      ${statCard('Active buckets', fmtNum(m.buckets_current), `${fmtNum(m.bucket_overflows)} overflows total`)}
-      ${statCard('Acquisition lines', fmtNum(m.acquisition_lines), 'read from sources')}
-      ${statCard('LAPI requests', fmtNum(m.lapi_requests), 'all routes')}
-      ${statCard('CAPI last pull', lastPull, `${fmtNum(m.capi_errors)} errors`)}
+      ${statCard('Active buckets', metricNumber(m, 'buckets_current', 'cs_buckets'), `${metricNumber(m, 'bucket_overflows', 'cs_bucket_overflowed_total')} overflows total`)}
+      ${statCard('Acquisition lines', metricNumber(m, 'acquisition_lines', 'cs_filesource_hits_total'), 'read from sources')}
+      ${statCard('LAPI requests', metricNumber(m, 'lapi_requests', 'cs_lapi_route_requests_total'), 'all routes')}
+      ${statCard('CAPI last pull', lastPull, `${metricNumber(m, 'capi_errors', 'cs_capi_errors_total')} errors`)}
     </div>
 
     <div class="grid-2">
@@ -1297,7 +1493,7 @@ async function renderMetrics() {
         <div class="panel-body">${renderBarList(m.top_nodes)}</div>
       </div>
       <div class="panel">
-        <div class="panel-head"><h3>Top parsers by errors</h3></div>
+        <div class="panel-head"><h3>Top parsers by unparsed lines</h3></div>
         <div class="panel-body">${renderBarList(m.top_nodes_ko)}</div>
       </div>
     </div>
@@ -1313,6 +1509,11 @@ async function renderMetrics() {
       </div>
     </div>
 
+    <div class="panel" style="margin-bottom:14px"><div class="panel-head"><h3>Log source diagnostics</h3><span class="hint">— = metric not exported; zero activity can be normal</span></div>
+      ${renderMetricRows(m.sources, [['read', 'Read'], ['parsed', 'Parsed'], ['unparsed', 'Unparsed'], ['poured', 'Poured into buckets'], ['allowlisted', 'Allowlisted']])}</div>
+    ${m.appsec?.length || m.appsec_rules?.length ? `<div class="panel" style="margin-bottom:14px"><div class="panel-head"><h3>AppSec</h3><span class="hint">counters since reset</span></div>
+      ${renderMetricRows(m.appsec, [['processed', 'Processed'], ['blocked', 'Blocked'], ['requested', 'Challenges requested'], ['accepted', 'Challenges accepted'], ['rejected', 'Challenges rejected']])}
+      <div class="panel-body"><h4>Most triggered AppSec rules</h4>${renderBarList(m.appsec_rules)}</div></div>` : ''}
     <div class="grid-2">
       <div class="panel">
         <div class="panel-head"><h3>Acquisition sources</h3><span class="hint">lines read</span></div>
@@ -1322,10 +1523,10 @@ async function renderMetrics() {
         <div class="panel-head"><h3>Pipeline health</h3></div>
         <div class="panel-body">
           <dl class="kv" style="margin:0">
-            <dt>Postoverflow queue</dt><dd>${fmtNum(m.postoverflow_queue)} waiting</dd>
-            <dt>Postoverflow dropped</dt><dd>${fmtNum(m.postoverflow_dropped)}</dd>
-            <dt>Bucket pours</dt><dd>${fmtNum(m.bucket_poured)}</dd>
-            <dt>CAPI errors</dt><dd>${fmtNum(m.capi_errors)}</dd>
+            <dt>Postoverflow queue</dt><dd>${metricNumber(m, 'postoverflow_queue', 'cs_postoverflow_queue_depth')} waiting</dd>
+            <dt>Postoverflow dropped</dt><dd>${metricNumber(m, 'postoverflow_dropped', 'cs_postoverflow_dropped_total')}</dd>
+            <dt>Bucket pours</dt><dd>${metricNumber(m, 'bucket_poured', 'cs_bucket_poured_total')}</dd>
+            <dt>CAPI errors</dt><dd>${metricNumber(m, 'capi_errors', 'cs_capi_errors_total')}</dd>
             <dt>Version</dt><dd class="mono">${esc(m.version || '—')}</dd>
           </dl>
         </div>
@@ -1424,21 +1625,22 @@ function renderHubLists() {
   const items = hubFilteredItems();
   const rows = items.map((item) => `
     <tr>
-      <td class="mono">${esc(item.name)}${item.description ? `<div class="hint">${esc(item.description)}</div>` : ''}</td>
+      <td class="mono hub-description">${esc(item.name)}${item.description ? `<div class="hint">${esc(item.description)}</div>` : ''}</td>
       <td>${esc(item.category)}</td>
-      <td class="mono">${esc(item.version || '—')}</td>
+      <td class="mono">${esc(item.local_version || (item.installed ? 'unknown' : '—'))} → ${esc(item.version || '—')}${item.update_available ? ' ' + badge('update available', 'warn') : ''}</td>
       <td>${hubBadges(item)}</td>
       <td class="hint">${hubBundles(item)}</td>
-      <td>${hubActionButton(item.category, item)}</td>
+      <td>${hubActionButton(item.category, item)}${item.update_available ? ` <button class="btn secondary" data-hub-action data-path="/api/hub/upgrade" data-category="${esc(item.category)}" data-name="${esc(item.name)}">Upgrade item</button>` : ''}</td>
     </tr>`).join('');
 
   $('#hub-items').innerHTML = rows
     ? `<div class="table-wrap"><table>
-        <thead><tr><th>Item</th><th>Type</th><th>Version</th><th>State</th><th>Bundles</th><th></th></tr></thead>
+        <thead><tr><th>Item</th><th>Type</th><th>Installed → available</th><th>State</th><th>Bundles</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
     : '<div class="empty">Nothing matches: untick "installed only" to browse the whole hub</div>';
 
   $('#hub-count').textContent = `${fmtNum(items.length)} shown`;
+  enhanceTables($('#hub-items'));
 
   const locals = status.local_only || [];
 
@@ -1451,6 +1653,8 @@ function renderHubLists() {
     button.addEventListener('click', () => {
       const body = { category: button.dataset.category, name: button.dataset.name };
 
+      if (button.dataset.path === '/api/hub/upgrade' && !confirm(`Upgrade ${body.category}/${body.name} and reload the engine?`)) return;
+
       if (button.dataset.path === '/api/hub/remove' && !confirm(`Remove ${body.category}/${body.name} and reload the engine?`)) return;
 
       hubAction(button.dataset.path, body, button);
@@ -1458,8 +1662,13 @@ function renderHubLists() {
   });
 }
 
+let hubBusy = false;
+
 async function hubAction(path, body, button) {
-  $$('button').forEach((item) => { item.disabled = true; });
+  if (hubBusy) return;
+  hubBusy = true;
+  const controls = $$('button, input, select', $('#view')).map((item) => [item, item.disabled]);
+  controls.forEach(([item]) => { item.disabled = true; });
 
   if (button) button.textContent = 'Working…';
 
@@ -1473,9 +1682,12 @@ async function hubAction(path, body, button) {
     }
   } catch (error) {
     toast(error.message, 'error');
+  } finally {
+    hubBusy = false;
+    controls.forEach(([item, disabled]) => { item.disabled = disabled; });
   }
 
-  renderHub();
+  if (state.route === 'hub' && state.user) route();
 }
 
 async function renderHub() {
@@ -1494,8 +1706,8 @@ async function renderHub() {
       <div class="panel-head"><h3>Items</h3><span class="hint" id="hub-count"></span></div>
       <div class="panel-body">
         <div class="toolbar">
-          <input type="text" id="hub-search" placeholder="filter by name or description" value="${esc(hubFilter.search)}" style="flex:1;min-width:180px">
-          <select id="hub-category"></select>
+          <input type="text" id="hub-search" aria-label="Search hub items" placeholder="filter by name or description" value="${esc(hubFilter.search)}" style="flex:1;min-width:180px">
+          <select id="hub-category" aria-label="Item type"></select>
           <label class="hint"><input type="checkbox" id="hub-installed" ${hubFilter.installedOnly ? 'checked' : ''}> installed only</label>
         </div>
         <div id="hub-items">${spinner()}</div>
@@ -1511,11 +1723,13 @@ async function renderHub() {
   try {
     status = await api('/api/hub');
   } catch (error) {
-    view.innerHTML = `<div class="page-header"><div><h2>Hub</h2></div></div>${errorBox(error.message)}`;
+    if (error.name === 'AbortError') throw error;
+    view.innerHTML = `<div class="page-header"><div><h2>Hub</h2></div></div>${errorBox(error.message, true)}`;
 
     return;
   }
 
+  state.cache.updatedAt = status.generated_at;
   hubData = status;
   renderHubLists();
 

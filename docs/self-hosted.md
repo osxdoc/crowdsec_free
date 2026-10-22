@@ -64,26 +64,52 @@ Pages:
 
 - **Dashboard** — alerts, events and unique sources, timeline, top countries,
   scenarios, AS and sources, decision counts by origin, machines and bouncers,
-  parser/bucket panels and the shared blocklist counters.
-- **Alerts** — filter by scenario/IP, inspect events and decisions, delete.
+  parser/bucket panels, independent service health and data-source availability.
+  Scenario and origin links open the corresponding filtered lists.
+- **Alerts** — filter by scenario, IP, period, origin and kind; optionally include
+  shared alerts. Inspect events and decisions, or delete an alert.
 - **Decisions** — everything the LAPI considers active, including entries pulled
-  from the shared blocklist (`Origin: CAPI`). Manual bans and unbans.
+  from the shared blocklist (`Origin: CAPI`). Manual bans and unbans, expiry
+  timestamps, simulation badges and links to the triggering alerts.
+- **IP lookup** — correlate alerts, active decisions (including containing CIDR
+  ranges) and allowlist matches with their reason. Each source reports failures
+  separately; retrieval limits are shown.
 - **Geo** — world map of the alert origins (bubbles sized by alert count),
   countries, networks (AS) and geo-enriched alerts.
 - **Infrastructure** — machines and bouncers from the LAPI database (version,
   OS, scenarios, last heartbeat/pull), LAPI route usage and enabled features.
-- **Metrics** — parser hits/errors, parse time, buckets, acquisition lines, LAPI
-  and CAPI counters, per-parser and per-bucket tables.
-- **Allowlists** — read-only view of centralized allowlists and their items.
+- **Metrics** — parsed/unparsed lines, parse time, buckets, LAPI and CAPI
+  counters, and per-source acquisition diagnostics. Unparsed lines are not
+  automatically errors. AppSec engine, challenge and rule counters appear when
+  exported. Missing counters show `—`; counters accumulate until reset and
+  do not follow the dashboard alert time range.
+- **Allowlists** — list contents, create/delete local lists and add/remove IPs
+  or CIDRs with optional expiry and comments. Console-managed lists remain
+  read-only. Adding entries also removes matching existing decisions, using
+  the same behavior as `cscli allowlists add`.
 - **Shared blocklist** — only with `blocklist.admin_url` configured: entries,
-  connected engines, add/remove entries.
+  connected engines, value/scenario filters, retrieval limits and add/remove entries.
 - **Hub** — installed/active/edited state for every item type, the age of the hub index,
   and the files in the config tree the hub does not manage. Refresh the index, upgrade
-  installed items, install or remove single items and collections. Everything but an
+  installed items or individual outdated items, with installed/available versions
+  identified by the hub version digests. Install or remove items and collections. Everything but an
   index refresh reloads the engine.
 - **Configuration** — edit the whitelisted files, YAML is validated before
   writing, the previous version is kept as `<file>.bak`, then "Reload engine"
-  applies the change.
+  applies the change. Review a diff before saving; "Check saved config" runs
+  `crowdsec -t` against the saved engine configuration before you reload.
+
+Tables support sorting and CSV export of the displayed rows only. Alert and
+Decision filters are included in the URL. Views show a fetch timestamp and an
+optional 30-second, 1-minute or 5-minute refresh interval, off by default. Refresh
+pauses while the tab is hidden, a form or dialog is active, or a hub action is
+running; the configuration editor is never refreshed automatically.
+
+Allowlist writes and hub changes require `cscli` in the web UI service's `PATH`,
+with access to the local engine configuration and database. Full configuration
+checks additionally require `crowdsec` in `PATH`. YAML syntax is checked on save;
+the full check validates saved files and does not save drafts or reload the engine.
+Concurrent writes/checks are refused while another engine operation is running.
 
 ### Reloading the engine
 
@@ -250,6 +276,9 @@ a decision, edited `console.yaml` (backup created) and reloaded the engine.
 `go test ./pkg/blocklistserver/ ./pkg/webui/` covers the API, auth, stream
 deltas, duration normalisation, config editing, the Prometheus parser and the
 database aggregates.
+
+Frontend regression tests use Node.js without additional packages:
+`node --test pkg/webui/frontend_test.mjs`.
 
 The Compose configuration was exercised with the same files path-rewritten on a
 host: bootstrap (machines, CAPI registration, hub install), engine with parsers,

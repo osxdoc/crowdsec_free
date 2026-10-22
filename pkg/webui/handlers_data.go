@@ -2,7 +2,6 @@ package webui
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -14,8 +13,13 @@ import (
 )
 
 type dataSources struct {
-	DB      bool `json:"db"`
-	Metrics bool `json:"metrics"`
+	DB           bool `json:"db"`
+	Metrics      bool `json:"metrics"`
+	Alerts       bool `json:"alerts"`
+	Decisions    bool `json:"decisions"`
+	Machines     bool `json:"machines"`
+	Bouncers     bool `json:"bouncers"`
+	RecentAlerts bool `json:"recent_alerts"`
 }
 
 type machinesOverview struct {
@@ -30,8 +34,22 @@ type bouncersOverview struct {
 	Items  []bouncerInfo `json:"items"`
 }
 
+type metricRow struct {
+	Name   string             `json:"name"`
+	Values map[string]float64 `json:"values"`
+}
+
+type serviceHealth struct {
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type metricsSummary struct {
-	Available bool `json:"available"`
+	Available   bool            `json:"available"`
+	Present     map[string]bool `json:"present"`
+	Sources     []metricRow     `json:"sources"`
+	Appsec      []metricRow     `json:"appsec"`
+	AppsecRules []namedCount    `json:"appsec_rules"`
 
 	Version string `json:"version,omitempty"`
 
@@ -66,12 +84,16 @@ type metricsSummary struct {
 }
 
 type overviewResponse struct {
-	GeneratedAt   time.Time      `json:"generated_at"`
-	Since         time.Time      `json:"since"`
-	LAPIReachable bool           `json:"lapi_reachable"`
-	Alerts        alertDBStats   `json:"alerts"`
-	Decisions     decisionStats  `json:"decisions"`
-	RecentAlerts  []alertSummary `json:"recent_alerts"`
+	Health         map[string]serviceHealth `json:"health"`
+	AlertSource    string                   `json:"alert_source"`
+	DecisionSource string                   `json:"decision_source"`
+	AlertsLimited  bool                     `json:"alerts_limited"`
+	GeneratedAt    time.Time                `json:"generated_at"`
+	Since          time.Time                `json:"since"`
+	LAPIReachable  bool                     `json:"lapi_reachable"`
+	Alerts         alertDBStats             `json:"alerts"`
+	Decisions      decisionStats            `json:"decisions"`
+	RecentAlerts   []alertSummary           `json:"recent_alerts"`
 
 	Machines machinesOverview `json:"machines"`
 	Bouncers bouncersOverview `json:"bouncers"`
@@ -121,7 +143,19 @@ func buildMetricsSummary(snapshot *metricsSnapshot) *metricsSummary {
 		return nil
 	}
 
-	summary := &metricsSummary{Available: true}
+	summary := &metricsSummary{Available: true, Present: map[string]bool{}}
+	for _, sample := range snapshot.Samples {
+		summary.Present[sample.Name] = true
+	}
+	summary.Sources = metricRows(snapshot, "source", map[string]string{
+		"cs_parser_hits_total": "read", "cs_parser_hits_ok_total": "parsed", "cs_parser_hits_ko_total": "unparsed",
+		"cs_bucket_poured_total": "poured", "cs_node_wl_hits_ok_total": "allowlisted",
+	})
+	summary.Appsec = metricRows(snapshot, "appsec_engine", map[string]string{
+		"cs_appsec_reqs_total": "processed", "cs_appsec_block_total": "blocked",
+		"cs_appsec_challenge_requested_total": "requested", "cs_appsec_challenge_accepted_total": "accepted", "cs_appsec_challenge_rejected_total": "rejected",
+	})
+	summary.AppsecRules = topFloat(snapshot.groupSum("cs_appsec_rule_hits", "rule_name"), 10)
 
 	summary.ParserHits = snapshot.sum("cs_parser_hits_total")
 	summary.ParserOK = snapshot.sum("cs_parser_hits_ok_total")
@@ -193,87 +227,121 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) buildOverview(ctx context.Context, since time.Duration) (*overviewResponse, error) {
 	limit := maxOverviewAlerts
-
-	alerts, _, err := s.lapi.Alerts.List(ctx, apiclient.AlertsListOpts{
-		Since:            cstime.DurationWithDays(since),
-		Limit:            &limit,
-		IncludeCAPI:      boolPtr(true),
-		IncludeSimulated: boolPtr(true),
-	})
-	if err != nil {
-		s.log.Errorf("listing alerts: %s", err)
-		return nil, fmt.Errorf("could not list alerts from the local API: %w", err)
-	}
-
 	result := &overviewResponse{
-		GeneratedAt:  time.Now(),
-		Since:        time.Now().Add(-since),
-		RecentAlerts: make([]alertSummary, 0, 10),
+		Since: time.Now().Add(-since), RecentAlerts: []alertSummary{},
+		Alerts: alertStatsFromAPI(nil, since), Decisions: summarizeDecisions(nil),
+		Machines: machinesOverview{Items: []machineInfo{}}, Bouncers: bouncersOverview{Items: []bouncerInfo{}},
+		AlertSource: "unavailable", DecisionSource: "unavailable", Health: map[string]serviceHealth{},
 	}
-
-	for i, alert := range *alerts {
-		summary := summarizeAlert(alert)
-		if i < 10 {
-			result.RecentAlerts = append(result.RecentAlerts, summary)
-		}
-	}
-
-	result.DataSources.DB = s.state != nil
-
-	if s.state != nil {
-		alertStats, err := s.state.AlertStats(ctx, result.Since)
-		if err != nil {
-			s.log.Warnf("database alerts stats: %s", err)
-		} else {
-			result.Alerts = *alertStats
-		}
-
-		decisionStats, err := s.state.DecisionStats(ctx)
-		if err != nil {
-			s.log.Warnf("database decision stats: %s", err)
-		} else {
-			result.Decisions = decisionStatsFromDB(decisionStats)
-		}
-
-		machines, err := s.state.Machines(ctx)
-		if err != nil {
-			s.log.Warnf("database machines: %s", err)
-		} else {
-			result.Machines = summarizeMachines(machines)
-		}
-
-		bouncers, err := s.state.Bouncers(ctx)
-		if err != nil {
-			s.log.Warnf("database bouncers: %s", err)
-		} else {
-			result.Bouncers = summarizeBouncers(bouncers)
-		}
-	} else {
-		// Fallback: everything we can derive from the limited alert list.
+	alerts, _, alertsErr := s.lapi.Alerts.List(ctx, apiclient.AlertsListOpts{
+		Since: cstime.DurationWithDays(since), Limit: &limit, IncludeCAPI: boolPtr(true), IncludeSimulated: boolPtr(true),
+	})
+	if alertsErr == nil && alerts != nil {
+		result.DataSources.RecentAlerts = true
+		result.DataSources.Alerts = true
+		result.DataSources.Decisions = true
+		result.AlertSource = "api"
+		result.DecisionSource = "api"
+		result.AlertsLimited = len(*alerts) >= limit
 		result.Alerts = alertStatsFromAPI(*alerts, since)
 		result.Decisions = summarizeDecisions(flattenDecisions(*alerts))
+		for i, alert := range *alerts {
+			if i < 10 {
+				result.RecentAlerts = append(result.RecentAlerts, summarizeAlert(alert))
+			}
+		}
 	}
-
+	result.Health["database"] = serviceHealth{State: "not_configured", Detail: "No readable SQLite database; API aggregates may be limited"}
+	if s.state != nil {
+		result.DataSources.DB = true
+		result.Health["database"] = serviceHealth{State: "ok"}
+		failed := func(err error) { result.Health["database"] = serviceHealth{State: "limited", Detail: err.Error()} }
+		if stats, err := s.state.AlertStats(ctx, result.Since); err == nil {
+			result.Alerts = *stats
+			result.DataSources.Alerts = true
+			result.AlertSource = "database"
+			result.AlertsLimited = false
+		} else {
+			failed(err)
+		}
+		if stats, err := s.state.DecisionStats(ctx); err == nil {
+			result.Decisions = decisionStatsFromDB(stats)
+			result.DecisionSource = "database"
+			result.DataSources.Decisions = true
+		} else {
+			failed(err)
+		}
+		if machines, err := s.state.Machines(ctx); err == nil {
+			result.Machines = summarizeMachines(machines)
+			result.DataSources.Machines = true
+		} else {
+			failed(err)
+		}
+		if bouncers, err := s.state.Bouncers(ctx); err == nil {
+			result.Bouncers = summarizeBouncers(bouncers)
+			result.DataSources.Bouncers = true
+		} else {
+			failed(err)
+		}
+	}
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-
-	if ok, _, err := s.lapi.HeartBeat.Ping(pingCtx); err == nil && ok {
-		result.LAPIReachable = true
+	ok, _, pingErr := s.lapi.HeartBeat.Ping(pingCtx)
+	result.LAPIReachable = pingErr == nil && ok
+	result.Health["lapi"] = serviceHealth{State: "ok"}
+	if !result.LAPIReachable {
+		result.Health["lapi"] = serviceHealth{State: "unavailable", Detail: "Local API heartbeat failed"}
 	}
-
+	if alertsErr != nil {
+		result.Health["lapi"] = serviceHealth{State: "unavailable", Detail: alertsErr.Error()}
+	}
 	s.attachBlocklistStats(ctx, result)
-
+	result.Health["blocklist"] = serviceHealth{State: "not_configured"}
+	if s.blocklist != nil {
+		result.Health["blocklist"] = serviceHealth{State: "ok"}
+		if result.BlocklistError != "" {
+			result.Health["blocklist"] = serviceHealth{State: "unavailable", Detail: result.BlocklistError}
+		}
+	}
 	metricsCtx, metricsCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer metricsCancel()
-
 	if snapshot, err := scrapeMetrics(metricsCtx, s.cfg.Data.MetricsURL); err == nil {
 		result.Metrics = buildMetricsSummary(snapshot)
 		result.DataSources.Metrics = true
+		result.Health["metrics"] = serviceHealth{State: "ok"}
 	} else {
-		s.log.Debugf("metrics unavailable: %s", err)
+		result.Health["metrics"] = serviceHealth{State: "unavailable", Detail: err.Error()}
 	}
-
+	result.GeneratedAt = time.Now()
 	return result, nil
+}
+
+func metricRows(snapshot *metricsSnapshot, label string, names map[string]string) []metricRow {
+	rows := map[string]map[string]float64{}
+	for _, sample := range snapshot.Samples {
+		field, wanted := names[sample.Name]
+		name := sample.Labels[label]
+		if !wanted || name == "" {
+			continue
+		}
+		if label == "source" && sample.Labels["type"] != "" {
+			name = sample.Labels["type"] + ":" + name
+		}
+		if rows[name] == nil {
+			rows[name] = map[string]float64{}
+		}
+		rows[name][field] += sample.Value
+	}
+	keys := make([]string, 0, len(rows))
+	for name := range rows {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	result := make([]metricRow, 0, len(keys))
+	for _, name := range keys {
+		result = append(result, metricRow{Name: name, Values: rows[name]})
+	}
+	return result
 }
 
 // alertStatsFromAPI is the fallback when the LAPI database is not readable:
@@ -374,30 +442,26 @@ func summarizeBouncers(bouncers []bouncerInfo) bouncersOverview {
 }
 
 func (s *Server) handleInfra(w http.ResponseWriter, r *http.Request) {
+	available := map[string]bool{"machines": false, "bouncers": false}
+	failures := map[string]string{}
 	response := map[string]any{
-		"machines": []machineInfo{},
-		"bouncers": []bouncerInfo{},
-		"db":       s.state != nil,
+		"machines": []machineInfo{}, "bouncers": []bouncerInfo{}, "db": s.state != nil,
+		"available": available, "errors": failures, "generated_at": time.Now(),
 	}
-
-	if s.state == nil {
-		writeJSON(w, http.StatusOK, response)
-		return
+	if s.state != nil {
+		if machines, err := s.state.Machines(r.Context()); err == nil {
+			response["machines"] = machines
+			available["machines"] = true
+		} else {
+			failures["machines"] = err.Error()
+		}
+		if bouncers, err := s.state.Bouncers(r.Context()); err == nil {
+			response["bouncers"] = bouncers
+			available["bouncers"] = true
+		} else {
+			failures["bouncers"] = err.Error()
+		}
 	}
-
-	machines, err := s.state.Machines(r.Context())
-	if err != nil {
-		s.log.Errorf("listing machines: %s", err)
-	}
-
-	bouncers, err := s.state.Bouncers(r.Context())
-	if err != nil {
-		s.log.Errorf("listing bouncers: %s", err)
-	}
-
-	response["machines"] = machines
-	response["bouncers"] = bouncers
-
 	writeJSON(w, http.StatusOK, response)
 }
 

@@ -255,6 +255,7 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		IPEquals:         strings.TrimSpace(q.Get("ip")),
 		ValueEquals:      strings.TrimSpace(q.Get("value")),
 		OriginEquals:     strings.TrimSpace(q.Get("origin")),
+		Kind:             strings.TrimSpace(q.Get("kind")),
 		Limit:            &limit,
 		IncludeCAPI:      boolPtr(q.Get("include_capi") == "true"),
 		IncludeSimulated: boolPtr(true),
@@ -279,8 +280,9 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"alerts": summaries,
-		"count":  len(summaries),
+		"alerts":       summaries,
+		"count":        len(summaries),
+		"generated_at": time.Now(),
 	})
 }
 
@@ -400,6 +402,8 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 
 	opts := apiclient.AlertsListOpts{
 		ScopeEquals:          strings.TrimSpace(q.Get("scope")),
+		ScenarioEquals:       strings.TrimSpace(q.Get("scenario")),
+		OriginEquals:         strings.TrimSpace(q.Get("origin")),
 		ValueEquals:          strings.TrimSpace(q.Get("value")),
 		TypeEquals:           strings.TrimSpace(q.Get("type")),
 		IPEquals:             strings.TrimSpace(q.Get("ip")),
@@ -420,8 +424,11 @@ func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
 	decisions := flattenDecisions(*alerts)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"decisions": decisions,
-		"count":     len(decisions),
+		"decisions":    decisions,
+		"count":        len(decisions),
+		"alert_limit":  limit,
+		"limited":      len(*alerts) >= limit,
+		"generated_at": time.Now(),
 	})
 }
 
@@ -588,7 +595,7 @@ func (s *Server) handleDeleteDecision(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAllowlists(w http.ResponseWriter, r *http.Request) {
-	allowlists, _, err := s.lapi.Allowlists.List(r.Context(), apiclient.AllowlistListOpts{})
+	allowlists, _, err := s.lapi.Allowlists.List(r.Context(), apiclient.AllowlistListOpts{WithContent: true})
 	if err != nil {
 		s.log.Errorf("listing allowlists: %s", err)
 		writeError(w, http.StatusBadGateway, "could not list allowlists: %s", err)
@@ -596,15 +603,16 @@ func (s *Server) handleListAllowlists(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"allowlists": *allowlists,
-		"count":      len(*allowlists),
+		"allowlists":   *allowlists,
+		"count":        len(*allowlists),
+		"generated_at": time.Now(),
 	})
 }
 
 func (s *Server) handleGetAllowlist(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	allowlist, _, err := s.lapi.Allowlists.Get(r.Context(), name, apiclient.AllowlistGetOpts{})
+	allowlist, _, err := s.lapi.Allowlists.Get(r.Context(), name, apiclient.AllowlistGetOpts{WithContent: true})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "could not load allowlist %q: %s", name, err)
 		return
