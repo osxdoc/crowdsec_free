@@ -134,11 +134,63 @@ docker compose logs -f cswebui
 docker compose restart crowdsec          # changes made outside the UI
 docker compose run --rm bootstrap config   # re-run config/credentials/hub
 docker compose run --rm register           # re-run blocklist registration
-docker compose pull && docker compose up -d --build   # upgrade
 ```
 
 Backup: `docker compose stop crowdsec csblocklistd`, then archive `./config`
 and `./data` — both are bind mounts next to the compose file.
+
+## Updating a deployment
+
+In the fork clone:
+
+```sh
+scripts/sync-upstream.sh --tag v1.8.3    # or no --tag to merge upstream/master
+scripts/sync-upstream.sh --push          # after build, tests and leak-check pass
+```
+
+`--set-version v1.8.3` also bumps the default in `.env.example` and
+`docker-compose.yml`; commit that change separately. The script prints the full
+commit SHA to deploy — use the SHA, not a branch name, so the host builds
+exactly what was tested.
+
+On the deployment host, in the compose directory, refresh the template first:
+it is a copy, and an upstream update may add services or variables.
+
+```sh
+curl -fsSL -o docker-compose.yml.new https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/docker-compose.yml
+diff -u docker-compose.yml docker-compose.yml.new   # only the build source and log mounts may differ
+mv docker-compose.yml.new docker-compose.yml
+curl -fsSL -o .env.example.new https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/.env.example
+diff .env .env.example.new                          # differing values are fine, missing keys are not
+rm .env.example.new
+```
+
+Then stop, back up, build the new commit and start:
+
+```sh
+docker compose stop crowdsec csblocklistd
+tar czf backup-$(date +%F).tgz config data
+curl -fsSL https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/build-image.sh \
+  | sh -s -- <full-sha> v1.8.3
+docker compose up -d
+docker compose ps
+```
+
+- The image tag *is* `CROWDSEC_VERSION`: pass the same version to
+  `build-image.sh` that `.env` sets, otherwise `up -d` starts the old image.
+- Rebuilding an existing version replaces the image under the same tag; Compose
+  recreates the containers because the image ID changed. The previous image
+  stays behind as dangling, so prune it occasionally (`docker image prune`).
+- `bootstrap` and `register` are one-shot services and run again on `up -d`;
+  they only write files that are missing, never overwrite configuration.
+- Upstream database migrations run when the engine starts. Keep the backup and
+  the previous image tag until `docker compose ps` shows both services healthy.
+
+A host that keeps a checkout instead builds in place:
+
+```sh
+git pull && docker compose up -d --build
+```
 
 ## Security notes
 
