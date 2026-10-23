@@ -137,7 +137,18 @@ docker compose run --rm register           # re-run blocklist registration
 ```
 
 Backup: `docker compose stop crowdsec csblocklistd`, then archive `./config`
-and `./data` — both are bind mounts next to the compose file.
+and `./data` — both are bind mounts next to the compose file. Parts of them are
+written by the containers, so they are root-owned: archive them from a container
+(`update.sh` does exactly that) rather than with the host's `tar`, which cannot
+read them as your user:
+
+```sh
+docker compose stop crowdsec csblocklistd
+docker run --rm --user 0:0 -v "$PWD/config:/src/config:ro" -v "$PWD/data:/src/data:ro" \
+  -v "$PWD:/out" crowdsec-free:v1.8.2 \
+  sh -c "tar czf /out/backup.tgz -C /src config data && chmod 644 /out/backup.tgz"
+docker compose up -d
+```
 
 ## Updating a deployment
 

@@ -105,6 +105,18 @@ else
 	fi
 fi
 
+# Containers run as root, so parts of config/ and data/ are root-owned with 0600.
+# Archive them from a throwaway container instead of fighting host permissions;
+# stopping the services first keeps the SQLite files consistent.
+stopped=0
+cleanup() {
+	if [ "$stopped" -eq 1 ]; then
+		printf 'update: restarting the previous stack\n' >&2
+		docker compose up -d || true
+	fi
+}
+trap cleanup EXIT INT TERM
+
 if [ "$backup" -eq 1 ]; then
 	archive="backup-$(date +%F)-$short.tgz"
 	if [ -f "$archive" ]; then
@@ -112,10 +124,18 @@ if [ "$backup" -eq 1 ]; then
 	else
 		say "stopping the services for a consistent $archive"
 		if [ "$dry" -eq 1 ]; then
-			say "would run: docker compose stop crowdsec csblocklistd && tar czf $archive config data"
+			say "would stop crowdsec/csblocklistd and archive config+data in a container"
 		else
 			docker compose stop crowdsec csblocklistd
-			tar czf "$archive" config data
+			stopped=1
+			rm -f "$archive.partial"
+			if ! docker run --rm --user 0:0 \
+				-v "$PWD/config:/src/config:ro" -v "$PWD/data:/src/data:ro" -v "$PWD:/out" \
+				"$image" sh -c "tar czf '/out/$archive.partial' -C /src config data && chmod 644 '/out/$archive.partial'"; then
+				printf 'update: backup failed, nothing was switched\n' >&2
+				exit 1
+			fi
+			mv "$archive.partial" "$archive"
 		fi
 	fi
 fi
@@ -136,6 +156,7 @@ fi
 
 say "starting the stack"
 docker compose up -d
+stopped=0
 
 # The login page answering is the quickest end-to-end check: no auth, no proxy,
 # and it fails while the container is still starting.
@@ -149,11 +170,12 @@ until curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; do
 		printf 'update: web UI did not answer within 90s, rolling back\n' >&2
 		docker tag "$previous" "$image"
 		docker compose up -d
+		stopped=0
 		exit 1
 	fi
 	sleep 2
 done
 
-say "services: $(docker compose ps --format '{{.Service}}={{.State}}' 2>/dev/null | tr '\n' ' ')"
+say "services: $(docker compose ps --services --filter status=running 2>/dev/null | tr '\n' ' ')"
 say "deployed $sha"
 printf '\nrollback: docker tag %s %s && docker compose up -d\n' "$previous" "$image"
