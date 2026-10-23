@@ -96,10 +96,23 @@ function toast(message, kind = '') {
   dismiss.type = 'button';
   dismiss.setAttribute('aria-label', 'Dismiss notification');
   dismiss.textContent = '×';
-  dismiss.addEventListener('click', () => el.remove());
   el.appendChild(dismiss);
   region.appendChild(el);
-  setTimeout(() => el.remove(), 5000);
+
+  const remove = () => {
+    if (el.isConnected === false) return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!el.animate || reduce) { el.remove(); return; }
+    el.animate(
+      [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(6px) scale(0.98)' }],
+      { duration: 160, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' },
+    ).onfinish = () => el.remove();
+  };
+  let timer = setTimeout(remove, 5000);
+  dismiss.addEventListener('click', remove);
+  // Keep a toast on screen while it is being read or dismissed.
+  el.addEventListener('mouseenter', () => { clearTimeout(timer); });
+  el.addEventListener('mouseleave', () => { timer = setTimeout(remove, 2500); });
 }
 
 let modalReturnFocus = null;
@@ -128,12 +141,14 @@ function openModal(title, bodyHtml, onMount) {
 
   if (onMount) onMount(root);
   dialog.showModal();
+  document.body?.classList.add('modal-open');
   enhanceTables(root);
 }
 
 function closeModal() {
   $('#modal-root dialog')?.close();
   $('#modal-root').innerHTML = '';
+  document.body?.classList.remove('modal-open');
   if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
   modalReturnFocus = null;
 }
