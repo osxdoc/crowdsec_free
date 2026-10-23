@@ -193,9 +193,8 @@ fi
 
 cat <<EOF
 
-deployment host (per deploy/docker/README.md, "Updating a deployment"):
+deployment host, in the compose directory (per deploy/docker/README.md):
 
-  curl -fsSL https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/build-image.sh \\
-    | sh -s -- $sha ${version:-v1.8.3}
-  docker compose up -d
+  sh update.sh --ref $sha --version ${version:-v1.8.3}
+
 EOF

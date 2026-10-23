@@ -37,5 +37,9 @@ tar xzf "$tmp/src.tgz" -C "$tmp" --strip-components=1
 }
 
 log "building $image from $repo@$ref"
-docker build -f "$tmp/deploy/docker/Dockerfile" --build-arg "VERSION=$version" -t "$image" "$tmp"
+docker build -f "$tmp/deploy/docker/Dockerfile" --build-arg "VERSION=$version" \
+    --label "org.opencontainers.image.revision=$ref" \
+    --label "org.opencontainers.image.version=$version" \
+    --label "org.opencontainers.image.source=https://github.com/$repo" \
+    -t "$image" "$tmp"
 log "built $(docker image inspect --format '{{.Id}}' "$image") ($(docker image inspect --format '{{.Size}}' "$image") bytes)"

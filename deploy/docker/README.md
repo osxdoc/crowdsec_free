@@ -141,50 +141,48 @@ and `./data` — both are bind mounts next to the compose file.
 
 ## Updating a deployment
 
-In the fork clone:
+Development side, in the fork clone:
 
 ```sh
 scripts/sync-upstream.sh --tag v1.8.3    # or no --tag to merge upstream/master
 scripts/sync-upstream.sh --push          # after build, tests and leak-check pass
 ```
 
-`--set-version v1.8.3` also bumps the default in `.env.example` and
-`docker-compose.yml`; commit that change separately. The script prints the full
-commit SHA to deploy — use the SHA, not a branch name, so the host builds
-exactly what was tested.
+On the deployment host, in the compose directory, one command rebuilds the
+current master commit and restarts the stack with it:
 
-On the deployment host, in the compose directory, refresh the template first:
-it is a copy, and an upstream update may add services or variables.
+```sh
+curl -fsSL -o update.sh https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/update.sh
+sh update.sh
+```
+
+`update.sh` builds `crowdsec-free:<version>-<commit>` while the running stack
+keeps serving, stops the services only for the `config`/`data` archive, retags
+the image, runs `docker compose up -d`, waits for the UI to answer and rolls the
+previous image back if it does not. Options: `--ref <sha|tag>`, `--version`,
+`--no-backup`, `--dry-run`. Keep the script next to the compose file and
+`./update.sh` is enough.
+
+The compose file is a copy: after an *upstream* update, diff it against the
+repository — only the build source and the log mounts may differ:
 
 ```sh
 curl -fsSL -o docker-compose.yml.new https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/docker-compose.yml
-diff -u docker-compose.yml docker-compose.yml.new   # only the build source and log mounts may differ
+diff -u docker-compose.yml docker-compose.yml.new
 mv docker-compose.yml.new docker-compose.yml
-curl -fsSL -o .env.example.new https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/.env.example
-diff .env .env.example.new                          # differing values are fine, missing keys are not
-rm .env.example.new
 ```
 
-Then stop, back up, build the new commit and start:
+Notes:
 
-```sh
-docker compose stop crowdsec csblocklistd
-tar czf backup-$(date +%F).tgz config data
-curl -fsSL https://raw.githubusercontent.com/osxdoc/crowdsec_free/master/deploy/docker/build-image.sh \
-  | sh -s -- <full-sha> v1.8.3
-docker compose up -d
-docker compose ps
-```
-
-- The image tag *is* `CROWDSEC_VERSION`: pass the same version to
-  `build-image.sh` that `.env` sets, otherwise `up -d` starts the old image.
-- Rebuilding an existing version replaces the image under the same tag; Compose
-  recreates the containers because the image ID changed. The previous image
-  stays behind as dangling, so prune it occasionally (`docker image prune`).
+- The image tag *is* `CROWDSEC_VERSION`: `update.sh` reads it from `.env`, so the
+  container picks up the freshly built image on the next `up -d`.
 - `bootstrap` and `register` are one-shot services and run again on `up -d`;
   they only write files that are missing, never overwrite configuration.
-- Upstream database migrations run when the engine starts. Keep the backup and
-  the previous image tag until `docker compose ps` shows both services healthy.
+- Upstream database migrations run when the engine starts. `update.sh` leaves
+  `backup-<date>-<commit>.tgz` next to the compose file and keeps the previous
+  image as `crowdsec-free:<version>-prev` until the next update.
+- Without the script, the manual equivalent is
+  `build-image.sh <full-sha> <version>`, `docker tag`, `docker compose up -d`.
 
 A host that keeps a checkout instead builds in place:
 
