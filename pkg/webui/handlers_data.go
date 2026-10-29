@@ -92,6 +92,7 @@ type overviewResponse struct {
 	Since          time.Time                `json:"since"`
 	LAPIReachable  bool                     `json:"lapi_reachable"`
 	Alerts         alertDBStats             `json:"alerts"`
+	PreviousAlerts *AlertCounts             `json:"previous_alerts,omitempty"`
 	Decisions      decisionStats            `json:"decisions"`
 	RecentAlerts   []alertSummary           `json:"recent_alerts"`
 
@@ -256,6 +257,9 @@ func (s *Server) buildOverview(ctx context.Context, since time.Duration) (*overv
 		result.DataSources.DB = true
 		result.Health["database"] = serviceHealth{State: "ok"}
 		failed := func(err error) { result.Health["database"] = serviceHealth{State: "limited", Detail: err.Error()} }
+		if previous, err := s.state.AlertCountsInRange(ctx, result.Since.Add(-since), result.Since); err == nil {
+			result.PreviousAlerts = &previous
+		}
 		if stats, err := s.state.AlertStats(ctx, result.Since); err == nil {
 			result.Alerts = *stats
 			result.DataSources.Alerts = true

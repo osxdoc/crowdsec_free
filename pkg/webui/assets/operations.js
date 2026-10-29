@@ -32,11 +32,22 @@ function mountRefresh(iso) {
   $('.refresh-controls', toolbar)?.remove();
   const controls = document.createElement('div');
   controls.className = 'refresh-controls';
-  controls.innerHTML = `<span class="hint" data-freshness>${esc(freshness(iso))}</span>
-    <button class="btn secondary" data-refresh>Refresh</button>
-    <label class="hint">Auto refresh <select aria-label="Auto refresh interval" id="auto-refresh">
-      ${[[0, 'Off'], [30, '30 seconds'], [60, '1 minute'], [300, '5 minutes']].map(([value, label]) => `<option value="${value}" ${refreshInterval === value ? 'selected' : ''}>${label}</option>`).join('')}
-    </select></label>`;
+  controls.innerHTML = `
+    <span class="hint" data-freshness>${esc(freshness(iso))}</span>
+    <button class="icon-btn" data-refresh type="button" title="Refresh now" aria-label="Refresh now">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+    </button>
+    <details class="menu" data-auto-menu>
+      <summary class="icon-btn" title="Auto refresh" aria-label="Auto refresh">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </summary>
+      <div class="menu-body">
+        <label for="auto-refresh">Auto refresh</label>
+        <select aria-label="Auto refresh interval" id="auto-refresh">
+          ${[[0, 'Off'], [30, '30 seconds'], [60, '1 minute'], [300, '5 minutes']].map(([value, label]) => `<option value="${value}" ${refreshInterval === value ? 'selected' : ''}>${label}</option>`).join('')}
+        </select>
+      </div>
+    </details>`;
   toolbar.appendChild(controls);
   const updateTime = () => {
     if (!controls.isConnected || !state.user) return;
@@ -45,7 +56,11 @@ function mountRefresh(iso) {
   };
   updateTime();
   $('[data-refresh]', controls).addEventListener('click', route);
-  $('#auto-refresh', controls).addEventListener('change', (event) => { refreshInterval = Number(event.target.value); scheduleRefresh(); });
+  $('#auto-refresh', controls).addEventListener('change', (event) => {
+    refreshInterval = Number(event.target.value);
+    scheduleRefresh();
+    $('[data-auto-menu]', controls).removeAttribute('open');
+  });
   scheduleRefresh();
 }
 

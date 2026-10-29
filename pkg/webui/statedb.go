@@ -273,6 +273,31 @@ func queryCounts(ctx context.Context, db *sql.DB, query string, args ...any) (ma
 // rejects as a whole, while the first 19 characters parse in both that and
 // RFC3339. Plain CAST(strftime('%s', col) ...) silently matched no rows.
 //
+// AlertCounts is the cheap aggregate used to compare two windows.
+type AlertCounts struct {
+	Total         int
+	Events        int
+	UniqueSources int
+}
+
+// AlertCountsInRange counts alerts in [from, to), which is what the dashboard
+// needs to show a delta against the previous window.
+func (s *StateStore) AlertCountsInRange(ctx context.Context, from, to time.Time) (AlertCounts, error) {
+	var counts AlertCounts
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(events_count), 0), COUNT(DISTINCT source_ip)
+		FROM alerts
+		WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ?
+		  AND CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) < ?`,
+		from.Unix(), to.Unix()).Scan(&counts.Total, &counts.Events, &counts.UniqueSources)
+	if err != nil {
+		return counts, fmt.Errorf("counting alerts in range: %w", err)
+	}
+
+	return counts, nil
+}
+
 // AlertStats aggregates alerts since the given time.
 func (s *StateStore) AlertStats(ctx context.Context, since time.Time) (*alertDBStats, error) {
 	stats := &alertDBStats{}

@@ -82,7 +82,7 @@ async function api(path, options = {}) {
 
 /* ---------------- ui helpers ---------------- */
 
-function toast(message, kind = '') {
+function toast(message, kind = '', action = null) {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
   el.textContent = message;
@@ -108,7 +108,17 @@ function toast(message, kind = '') {
       { duration: 160, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' },
     ).onfinish = () => el.remove();
   };
-  let timer = setTimeout(remove, 5000);
+  if (action) {
+    el.classList.add('has-action');
+    const button = document.createElement('button');
+    button.className = 'toast-action';
+    button.type = 'button';
+    button.textContent = action.label;
+    button.addEventListener('click', () => { action.onClick(); remove(); });
+    el.appendChild(button);
+  }
+
+  let timer = setTimeout(remove, action ? 10000 : 5000);
   dismiss.addEventListener('click', remove);
   // Keep a toast on screen while it is being read or dismissed.
   el.addEventListener('mouseenter', () => { clearTimeout(timer); });
@@ -289,6 +299,32 @@ window.addEventListener('hashchange', () => { if (state.user) route(); });
 function setNavOpen(open) {
   $('.sidebar').classList.toggle('nav-open', open);
   $('#nav-toggle').setAttribute('aria-expanded', String(open));
+  const scrim = $('#nav-scrim');
+  if (scrim) {
+    scrim.hidden = !open;
+    scrim.classList.toggle('visible', open);
+  }
+  document.body?.classList.toggle('nav-locked', open);
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    toast('Copied to clipboard', 'ok');
+  } catch {
+    toast('Could not copy', 'error');
+  }
 }
 
 $('#nav-toggle').addEventListener('click', () => setNavOpen($('#nav-toggle').getAttribute('aria-expanded') !== 'true'));
@@ -296,8 +332,12 @@ $('.sidebar').addEventListener('keydown', (event) => {
   if (event.key === 'Escape') { setNavOpen(false); $('#nav-toggle').focus(); }
 });
 $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#view').focus(); });
+$('#nav-scrim')?.addEventListener('click', () => setNavOpen(false));
+
 $('#view').addEventListener('click', (event) => {
   if (event.target.closest('[data-retry]')) { route(); return; }
+  const copy = event.target.closest('[data-copy]');
+  if (copy) { copyText(copy.dataset.copy); return; }
   const alert = event.target.closest('[data-alert-id]');
   if (alert) showAlert(Number(alert.dataset.alertId));
   const allowlist = event.target.closest('[data-allowlist]');
@@ -384,19 +424,46 @@ async function renderDashboard() {
     ? ((metrics.parser_ko / metrics.parser_hits) * 100).toFixed(1) + '% unparsed'
     : '';
 
-  const cards = [
-    statCard(`Alerts (${state.range})`, data.data_sources.alerts === false ? '—' : fmtNum(data.alerts.total), data.data_sources.alerts === false ? 'unavailable' : `${fmtNum(data.alerts.events)} events`),
-    statCard('Unique sources', data.data_sources.alerts === false ? '—' : fmtNum(data.alerts.unique_sources), data.data_sources.alerts === false ? 'unavailable' : 'distinct source IPs'),
-    statCard('Active decisions', data.data_sources.decisions === false ? '—' : fmtNum(data.decisions.total), data.data_sources.decisions === false ? 'unavailable' : data.decision_source === 'api' ? 'from retrieved alerts; may be incomplete' : `${fmtNum(data.decisions.simulated)} simulated`),
-    statCard('Machines', data.data_sources.machines === false ? '—' : `${data.machines.online}/${data.machines.total}`, 'online (< 5 min)'),
-    statCard('Bouncers', data.data_sources.bouncers === false ? '—' : `${data.bouncers.active}/${data.bouncers.total}`, 'active (< 5 min)'),
-    data.blocklist
-      ? statCard('Shared blocklist', fmtNum(data.blocklist.active_decisions), `${data.blocklist.machines} engine(s)`)
-      : '',
-    metrics
-      ? statCard('Parser input', metricNumber(metrics, 'parser_hits', 'cs_parser_hits_total'), ko || 'counter since engine reset')
-      : '',
-  ].filter(Boolean).join('');
+  const alertsOk = data.data_sources.alerts !== false;
+  const decisionsOk = data.data_sources.decisions !== false;
+  const previous = data.previous_alerts;
+  const delta = (current, before) => {
+    if (!before) return '';
+    const change = ((current - before) / before) * 100;
+    if (!Number.isFinite(change)) return '';
+    if (Math.abs(change) < 1) return '<span class="delta flat">±0%</span>';
+    const up = change > 0;
+    return `<span class="delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(change).toFixed(0)}%</span>`;
+  };
+
+  const situation = `
+    <div class="situation">
+      <div class="card primary">
+        <div class="label">Alerts · last ${esc(state.range)}</div>
+        <div class="value">${alertsOk ? fmtNum(data.alerts.total) : '—'}</div>
+        <div class="hint">${alertsOk ? `${fmtNum(data.alerts.events)} events ${delta(data.alerts.total, previous?.Total)}` : 'unavailable'}</div>
+      </div>
+      <div class="card primary">
+        <div class="label">Unique sources</div>
+        <div class="value">${alertsOk ? fmtNum(data.alerts.unique_sources) : '—'}</div>
+        <div class="hint">${alertsOk ? `distinct IPs ${delta(data.alerts.unique_sources, previous?.UniqueSources)}` : 'unavailable'}</div>
+      </div>
+      <div class="card primary">
+        <div class="label">Active decisions</div>
+        <div class="value">${decisionsOk ? fmtNum(data.decisions.total) : '—'}</div>
+        <div class="hint">${decisionsOk ? `${fmtNum(data.decisions.simulated)} simulated` : 'unavailable'}</div>
+      </div>
+    </div>`;
+
+  const strip = `
+    <div class="stat-strip">
+      ${statPill('Machines', data.data_sources.machines === false ? '—' : `${data.machines.online}/${data.machines.total}`, data.machines.online > 0 ? 'ok' : 'off')}
+      ${statPill('Bouncers', data.data_sources.bouncers === false ? '—' : `${data.bouncers.active}/${data.bouncers.total}`, data.bouncers.active > 0 ? 'ok' : 'off')}
+      ${data.blocklist ? statPill('Blocklist', fmtNum(data.blocklist.active_decisions), 'ok') : ''}
+      ${metrics ? statPill('Parser input', metricNumber(metrics, 'parser_hits', 'cs_parser_hits_total'), ko ? 'warn' : 'ok') : ''}
+    </div>`;
+
+  const onboarding = renderOnboarding(data);
 
   const metricsPanels = metrics
     ? `
@@ -415,26 +482,25 @@ async function renderDashboard() {
        </div></div>`;
 
   $('#dashboard-body').innerHTML = `
+    ${onboarding}
     ${renderHealth(data)}
-    <div class="cards">${cards}</div>
+    ${situation}
+    ${strip}
 
-    <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head"><h3>Alerts over time</h3><span class="hint">${esc(state.range)}</span></div>
-        <div class="panel-body">
-          ${data.data_sources.alerts === false ? '<div class="empty">Alert data unavailable</div>' : renderChart(data.alerts.timeline)}
-          <div class="chart-legend"><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[0].time) : ''}</span><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[data.alerts.timeline.length - 1].time) : ''}</span></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Top countries</h3><span class="hint">source geo</span></div>
-        <div class="panel-body">${data.data_sources.alerts === false ? '<div class="empty">Alert data unavailable</div>' : renderCountryList(data.alerts.by_country)}</div>
+    <div class="panel" style="margin-bottom:18px">
+      <div class="panel-head"><h3>Alerts over time</h3><span class="hint">${esc(state.range)}</span></div>
+      <div class="panel-body">
+        ${alertsOk ? renderChart(data.alerts.timeline) : '<div class="empty">Alert data unavailable</div>'}
+        <div class="chart-legend"><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[0].time) : ''}</span><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[data.alerts.timeline.length - 1].time) : ''}</span></div>
       </div>
     </div>
 
     <div class="panel map-panel" style="margin-bottom:18px">
       <div class="panel-head"><h3>Where the attacks come from</h3><span class="hint">GeoIP, last ${esc(state.range)}</span></div>
-      <div class="panel-body">${data.data_sources.alerts === false ? '<div class="empty">Alert data unavailable</div>' : renderWorldMap(data.alerts.geo, data.alerts.by_country)}</div>
+      <div class="panel-body map-split">
+        <div class="map-canvas">${alertsOk ? renderWorldMap(data.alerts.geo, data.alerts.by_country) : '<div class="empty">Alert data unavailable</div>'}</div>
+        <div class="map-side">${alertsOk ? renderCountryList(data.alerts.by_country) : ''}</div>
+      </div>
     </div>
 
     <div class="grid-3">
@@ -472,6 +538,65 @@ async function renderDashboard() {
 
     ${!db ? '<p class="hint" style="margin-top:12px">LAPI database not readable: machine/bouncer and geo aggregates are limited. Set <code>data.db_path</code>.</p>' : ''}`;
 
+  $('#onboarding-dismiss')?.addEventListener('click', () => {
+    localStorage.setItem('cswebui.onboarding.dismissed', '1');
+    $('#onboarding')?.remove();
+  });
+
+
+}
+
+
+// Filters stay collapsed until something is set: they were the largest block on
+// every list page, and most visits never touch them.
+const filterNoise = { alerts: ['limit', 'include_capi'], decisions: ['limit'], blocklist: ['limit'] };
+
+function activeFilterCount(kind) {
+  const noise = filterNoise[kind] || [];
+  return Object.keys(state.filters[kind] || {}).filter((key) => !noise.includes(key)).length;
+}
+
+function filterPanelOpen(kind) {
+  const count = activeFilterCount(kind);
+  return `<details class="panel filters" data-filters="${kind}"${count ? ' open' : ''}>
+    <summary><span>Filters</span><span class="filter-count">${count ? `${count} active` : ''}</span></summary>
+    <div class="panel-body">`;
+}
+
+function filterPanelClose() {
+  return '</div></details>';
+}
+
+function updateFilterBadge(kind) {
+  const box = $(`[data-filters="${kind}"]`);
+  if (!box) return;
+  const count = activeFilterCount(kind);
+  const badge = $('.filter-count', box);
+  if (badge) badge.textContent = count ? `${count} active` : '';
+  box.toggleAttribute('open', count > 0);
+}
+
+function statPill(label, value, state = '') {
+  return `<span class="stat-pill"><span class="dot ${state}"></span><span class="stat-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+}
+
+// The checklist disappears once every step is done, or when dismissed.
+function renderOnboarding(data) {
+  const dismissed = localStorage.getItem('cswebui.onboarding.dismissed') === '1';
+  const steps = [
+    { done: data.lapi_reachable, text: 'Engine reachable', hint: 'Local API answers' },
+    { done: (data.machines?.total || 0) > 0, text: 'Engine registered', hint: 'cscli machines add' },
+    { done: (data.bouncers?.total || 0) > 0, text: 'Bouncer connected', hint: 'cscli bouncers add <name>' },
+    { done: (data.alerts?.by_country?.length || 0) > 0, text: 'GeoIP enrichment active', hint: 'install crowdsecurity/geoip-enrich' },
+  ];
+  const open = steps.filter((step) => !step.done);
+  if (dismissed || open.length === 0) return '';
+  return `<div class="panel onboarding" id="onboarding">
+    <div class="panel-head"><h3>Finish the setup</h3><button class="close" type="button" id="onboarding-dismiss" aria-label="Dismiss checklist">×</button></div>
+    <div class="panel-body">
+      <ul>${steps.map((step) => `<li class="${step.done ? 'done' : ''}"><span class="tick">${step.done ? '✓' : '○'}</span><span>${esc(step.text)}</span>${step.done ? '' : `<code>${esc(step.hint)}</code>`}</li>`).join('')}</ul>
+    </div>
+  </div>`;
 }
 
 function statCard(label, value, hint) {
@@ -513,7 +638,8 @@ function statusBadge(active, activeText = 'online', inactiveText = 'offline') {
 
 function renderMachinesTable(machines) {
   if (!machines || machines.length === 0) {
-    return '<div class="empty">No machines registered</div>';
+    return `<div class="empty"><p>No machines registered yet.</p>
+      <button class="btn secondary" type="button" data-copy="cscli machines add my-engine --auto">Copy: cscli machines add …</button></div>`;
   }
 
   const cutoff = Date.now() - 5 * 60 * 1000;
@@ -532,7 +658,8 @@ function renderMachinesTable(machines) {
 
 function renderBouncersTable(bouncers) {
   if (!bouncers || bouncers.length === 0) {
-    return '<div class="empty">No bouncers registered</div>';
+    return `<div class="empty"><p>No bouncer connected yet.</p>
+      <button class="btn secondary" type="button" data-copy="cscli bouncers add my-bouncer">Copy: cscli bouncers add …</button></div>`;
   }
 
   return `<div class="table-wrap"><table>
@@ -628,8 +755,7 @@ async function renderAlerts() {
     <div class="page-header">
       <div><h2>Alerts</h2><p>Everything your scenarios detected.</p></div>
     </div>
-    <div class="panel" style="margin-bottom:14px">
-      <div class="panel-body">
+    ${filterPanelOpen('alerts')}
         <form class="form-grid" id="alert-filters">
           <div class="field"><label for="f-scenario">Scenario</label><input id="f-scenario" type="text" placeholder="crowdsecurity/ssh-bf"></div>
           <div class="field"><label for="f-ip">Source IP</label><input id="f-ip" type="text" placeholder="1.2.3.4"></div>
@@ -642,8 +768,7 @@ async function renderAlerts() {
           <div class="field"><label for="f-include_capi">Shared alerts</label><select id="f-include_capi"><option value="false">Exclude CAPI</option><option value="true">Include CAPI</option></select></div>
           <div class="field" style="display:flex;align-items:flex-end"><button class="btn" type="submit">Filter</button></div>
         </form>
-      </div>
-    </div>
+      ${filterPanelClose()}
     <div class="panel"><div id="alerts-body">${spinner()}</div></div>`;
 
   let loadID = 0;
@@ -661,6 +786,7 @@ async function renderAlerts() {
       if (value) params.set(key, value);
     });
     rememberFilters('alerts', params);
+    updateFilterBadge('alerts');
 
     $('#alerts-body').innerHTML = spinner();
 
@@ -764,8 +890,7 @@ async function renderDecisions() {
       <div><h2>Decisions</h2><p>What your remediators enforce.</p></div>
       <div class="toolbar"><button class="btn" id="add-decision">Add decision</button></div>
     </div>
-    <div class="panel" style="margin-bottom:14px">
-      <div class="panel-body">
+    ${filterPanelOpen('decisions')}
         <form class="form-grid" id="decision-filters">
           <div class="field"><label for="d-ip">IP</label><input id="d-ip" type="text" placeholder="1.2.3.4"></div>
           <div class="field"><label for="d-range">Range</label><input id="d-range" type="text" placeholder="1.2.3.0/24"></div>
@@ -779,8 +904,7 @@ async function renderDecisions() {
           <div class="field"><label for="d-limit">Alert retrieval limit</label><select id="d-limit"><option>100</option><option selected>500</option><option>1000</option><option>5000</option></select></div>
           <div class="field" style="display:flex;align-items:flex-end"><button class="btn" type="submit">Filter</button></div>
         </form>
-      </div>
-    </div>
+      ${filterPanelClose()}
     <div class="panel"><div id="decisions-body">${spinner()}</div></div>`;
 
   let loadID = 0;
@@ -793,6 +917,7 @@ async function renderDecisions() {
       if (value) params.set(key, value);
     });
     rememberFilters('decisions', params);
+    updateFilterBadge('decisions');
 
     $('#decisions-body').innerHTML = spinner();
 
@@ -803,12 +928,13 @@ async function renderDecisions() {
       enhanceTables(body);
       mountRefresh(data.generated_at || new Date().toISOString());
 
+      const decisionsById = new Map((data.decisions || []).map((item) => [item.id, item]));
       $$('#decisions-body tr[data-decision-id]').forEach((row) => {
         const button = $('button[data-delete]', row);
         if (button) {
           button.addEventListener('click', async (event) => {
             event.stopPropagation();
-            await deleteDecision(Number(row.dataset.decisionId), row.dataset.origin, load, button);
+            await deleteDecision(decisionsById.get(Number(row.dataset.decisionId)), load, button);
           });
         }
       });
@@ -833,7 +959,7 @@ function renderDecisionsTable(decisions, actionable = true) {
 
   const rows = decisions.map((decision) => `
     <tr data-decision-id="${decision.id}" data-origin="${esc(decision.origin)}">
-      <td class="mono">${decision.scope === 'ip' ? `<button class="table-link" data-inspect-ip="${esc(decision.value)}">${esc(decision.value)}</button>` : esc(decision.value)}</td>
+      <td class="mono">${decision.scope === 'ip' ? `<button class="table-link" data-inspect-ip="${esc(decision.value)}">${esc(decision.value)}</button>` : `<span data-copy="${esc(decision.value)}" title="Click to copy">${esc(decision.value)}</span>`}</td>
       <td>${esc(decision.scope)}</td>
       <td>${decision.country ? `<span class="flag">${flag(decision.country)}</span> ${esc(decision.country)}` : '—'}</td>
       <td class="mono" title="${esc(decision.as_name || '')}">${esc(decision.as_name || '—')}</td>
@@ -849,24 +975,40 @@ function renderDecisionsTable(decisions, actionable = true) {
     <tbody>${rows}</tbody></table></div>`;
 }
 
-async function deleteDecision(id, origin, onDone, button) {
-  const message = origin === 'CAPI' || origin === 'lists'
-    ? 'Delete this shared blocklist entry? It is re-added on the next pull unless it is removed on the blocklist server.'
-    : 'Delete this decision?';
-
-  if (!confirm(message)) return;
+async function deleteDecision(decision, onDone, button) {
   button.disabled = true;
 
   try {
-    await api(`/api/decisions/${id}`, { method: 'DELETE' });
-    toast('Decision deleted', 'ok');
-    if (button.isConnected) await onDone();
+    await api(`/api/decisions/${decision.id}`, { method: 'DELETE' });
+    await onDone();
+    toast(`Decision for ${decision.value} removed`, 'ok', {
+      label: 'Undo',
+      onClick: async () => {
+        try {
+          await api('/api/decisions', {
+            method: 'POST',
+            body: {
+              value: decision.value,
+              scope: decision.scope,
+              type: decision.type,
+              duration: decision.duration || '4h',
+              reason: 'undo delete from cswebui',
+            },
+          });
+          toast('Decision restored', 'ok');
+          await onDone();
+        } catch (error) {
+          if (error.name !== 'AbortError') toast(error.message, 'error');
+        }
+      },
+    });
   } catch (error) {
     if (error.name !== 'AbortError') toast(error.message, 'error');
   } finally {
     button.disabled = false;
   }
 }
+
 
 function showDecisionForm(target, onDone) {
   const title = target === 'local' ? 'Add decision' : 'Share decision via blocklist server';
@@ -994,11 +1136,11 @@ async function renderBlocklist() {
       <div><h2>Shared blocklist</h2><p>Decisions exchanged through your own blocklist server.</p></div>
       <div class="toolbar"><button class="btn" id="share-decision">Share decision</button></div>
     </div>
-    <div class="panel" style="margin-bottom:14px"><div class="panel-body"><form id="blocklist-filters" class="form-grid">
+    ${filterPanelOpen('blocklist')}<form id="blocklist-filters" class="form-grid">
       <div class="field"><label for="bl-value">Value</label><input id="bl-value" type="text"></div>
       <div class="field"><label for="bl-scenario">Scenario</label><input id="bl-scenario" type="text"></div>
       <div class="field"><label for="bl-limit">Limit</label><select id="bl-limit"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></div>
-      <button class="btn" type="submit">Filter</button></form></div></div>
+      <button class="btn" type="submit">Filter</button></form>${filterPanelClose()}
     <div id="blocklist-stats" class="cards"></div>
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-head"><h3>Entries</h3><span class="hint" id="blocklist-count"></span></div>
@@ -1016,7 +1158,7 @@ async function renderBlocklist() {
     event.preventDefault();
     const params = new URLSearchParams();
     filterFields.blocklist.forEach((key) => { const value = $(`#bl-${key}`).value.trim(); if (value) params.set(key, value); });
-    rememberFilters('blocklist', params); route();
+    rememberFilters('blocklist', params); updateFilterBadge('blocklist'); route();
   });
 
   const [stats, decisions, machines] = await Promise.all([
