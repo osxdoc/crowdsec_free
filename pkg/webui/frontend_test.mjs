@@ -143,11 +143,18 @@ test('decision filters survive rendering and unban refreshes the filtered result
   assert.equal(run(`$('#d-ip').value`), '192.0.2.1');
   assert.match(run('state.requests[0]'), /ip=192.0.2.1&type=ban/);
   run(`route = () => { throw new Error('must refresh in place'); };
-    state.refreshed = false;`);
-  await run(`deleteDecision(42, 'cscli', async () => { state.refreshed = true; }, $('#unban'))`);
+    state.refreshed = false;
+    state.toasts = [];
+    toast = (message, kind, action) => { state.toasts.push({ message, kind, action }); };`);
+  await run(`deleteDecision({ id: 42, value: '192.0.2.1', scope: 'ip', type: 'ban', duration: '4h' },
+    async () => { state.refreshed = true; }, $('#unban'))`);
   assert.equal(run('state.refreshed'), true);
   assert.equal(run(`$('#d-ip').value`), '192.0.2.1');
   assert.equal(button.disabled, false);
+  assert.equal(run('state.toasts[0].action.label'), 'Undo');
+
+  await run('state.toasts[0].action.onClick()');
+  assert.match(run('state.requests[state.requests.length - 1]'), /^\/api\/decisions$/);
 });
 
 test('navigation aborts stale reads so they cannot populate the new view', async () => {
