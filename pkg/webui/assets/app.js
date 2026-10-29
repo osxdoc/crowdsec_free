@@ -428,7 +428,7 @@ async function renderDashboard() {
   const decisionsOk = data.data_sources.decisions !== false;
   const previous = data.previous_alerts;
   const delta = (current, before) => {
-    if (!before) return '';
+    if (!before) return current > 0 ? '<span class="delta up">new</span>' : '';
     const change = ((current - before) / before) * 100;
     if (!Number.isFinite(change)) return '';
     if (Math.abs(change) < 1) return '<span class="delta flat">±0%</span>';
