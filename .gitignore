@@ -90,3 +90,6 @@ __pycache__
 !/deploy/docker/config/config.yaml
 !/deploy/docker/config/console.yaml
 !/deploy/docker/config/webui.yaml
+
+# macOS Finder metadata
+.DS_Store
