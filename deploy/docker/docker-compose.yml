@@ -7,6 +7,12 @@ name: crowdsec-free
 # every other knob is a variable below, so the copies stay comparable.
 x-app: &app
   image: crowdsec-free:${CROWDSEC_VERSION:-v1.8.2}
+  # Bound the container logs: the deployment host's disk is small and shared.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
   build:
     context: ../..
     dockerfile: deploy/docker/Dockerfile
@@ -107,9 +113,16 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Etc/UTC}
-    # Shares the engine's PID namespace so hub changes and "Reload engine" can
-    # send SIGHUP.
-    pid: "service:crowdsec"
+    # The host PID namespace, not the engine's: pkill can still reach the engine
+    # by name, but when the engine container restarts, the kernel does not kill
+    # every other process in its namespace along with it (that took the UI down).
+    pid: host
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     volumes: *volumes
     ports:
       # Bound to localhost: put a TLS reverse proxy in front of it, or set

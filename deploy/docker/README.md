@@ -117,7 +117,9 @@ Everything lives in `./config` and is mounted into the containers:
 
 Files in `webui.yaml` under `files:` are editable from the UI. The Hub page installs,
 removes and upgrades hub items, and reloads the engine after each change with
-`pkill -HUP` through the shared PID namespace.
+`pkill -HUP`. `cswebui` runs in the host PID namespace (`pid: host`), so that
+signal reaches the engine; sharing the engine's namespace instead meant that any
+engine restart killed the UI with it.
 
 State that is not configuration lives in `./data` (`crowdsec.db`, GeoIP
 databases). `.env` selects ports, their bind addresses (`LAPI_BIND`,
@@ -229,4 +231,5 @@ git pull && docker compose up -d --build
 | No GeoIP data (empty country/AS) | run bootstrap with hub content (`SKIP_HUB_UPDATE=false`), check `./data` for `GeoLite2-City.mmdb` |
 | No alerts | check `acquis.yaml` paths and `docker compose logs crowdsec`; the host `/var/log` must contain the files |
 | Engine exits with CAPI auth errors | blocklist DB was reset: delete `config/online_api_credentials.yaml` and re-run bootstrap |
-| `Reload engine` fails | ensure `pid: "service:crowdsec"` is still set for `cswebui` |
+| `Reload engine` fails | ensure `pid: host` and `engine.reload_command: ["pkill","-HUP","-x","crowdsec"]` are still set for `cswebui` |
+| UI vanished right after a hub install or engine restart | it shared the engine's PID namespace; the compose file must say `pid: host` for `cswebui` |
