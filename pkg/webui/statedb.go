@@ -268,27 +268,32 @@ func queryCounts(ctx context.Context, db *sql.DB, query string, args ...any) (ma
 	return counts, rows.Err()
 }
 
+// Timestamps are compared through strftime('%s', substr(col,1,19)): the engine
+// stores Go's time format ("2026-10-29 19:17:20.97 +0000 UTC"), which strftime()
+// rejects as a whole, while the first 19 characters parse in both that and
+// RFC3339. Plain CAST(strftime('%s', col) ...) silently matched no rows.
+//
 // AlertStats aggregates alerts since the given time.
 func (s *StateStore) AlertStats(ctx context.Context, since time.Time) (*alertDBStats, error) {
 	stats := &alertDBStats{}
 
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(events_count), 0), COUNT(DISTINCT source_ip)
-		FROM alerts WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ?`, since.Unix()).
+		FROM alerts WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ?`, since.Unix()).
 		Scan(&stats.Total, &stats.Events, &stats.UniqueSources)
 	if err != nil {
 		return nil, fmt.Errorf("counting alerts: %w", err)
 	}
 
 	byScenario, err := queryCounts(ctx, s.db,
-		`SELECT scenario, COUNT(*) FROM alerts WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ? GROUP BY scenario`, since.Unix())
+		`SELECT scenario, COUNT(*) FROM alerts WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ? GROUP BY scenario`, since.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("alerts by scenario: %w", err)
 	}
 
 	byCountry, err := queryCounts(ctx, s.db,
 		`SELECT source_country, COUNT(*) FROM alerts
-		 WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ? AND source_country IS NOT NULL AND source_country != ''
+		 WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ? AND source_country IS NOT NULL AND source_country != ''
 		 GROUP BY source_country`, since.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("alerts by country: %w", err)
@@ -296,14 +301,14 @@ func (s *StateStore) AlertStats(ctx context.Context, since time.Time) (*alertDBS
 
 	byAS, err := queryCounts(ctx, s.db,
 		`SELECT source_as_name, COUNT(*) FROM alerts
-		 WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ? AND source_as_name IS NOT NULL AND source_as_name != ''
+		 WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ? AND source_as_name IS NOT NULL AND source_as_name != ''
 		 GROUP BY source_as_name`, since.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("alerts by as: %w", err)
 	}
 
 	byKind, err := queryCounts(ctx, s.db,
-		`SELECT kind, COUNT(*) FROM alerts WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ? GROUP BY kind`, since.Unix())
+		`SELECT kind, COUNT(*) FROM alerts WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ? GROUP BY kind`, since.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("alerts by kind: %w", err)
 	}
@@ -337,7 +342,7 @@ func (s *StateStore) alertGeo(ctx context.Context, since time.Time) ([]geoPoint,
 		SELECT ROUND(source_latitude, 1), ROUND(source_longitude, 1),
 		       COALESCE(source_country, ''), COUNT(*)
 		FROM alerts
-		WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ?
+		WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ?
 		  AND source_latitude IS NOT NULL AND source_longitude IS NOT NULL
 		GROUP BY ROUND(source_latitude, 1), ROUND(source_longitude, 1)
 		ORDER BY COUNT(*) DESC
@@ -373,9 +378,9 @@ func (s *StateStore) alertTimeline(ctx context.Context, since time.Time) ([]time
 	stepSeconds := int64(step.Seconds())
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT (CAST(strftime('%s', created_at) AS INTEGER) / ?) * ? AS bucket, COUNT(*)
+		SELECT (CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) / ?) * ? AS bucket, COUNT(*)
 		FROM alerts
-		WHERE CAST(strftime('%s', created_at) AS INTEGER) >= ?
+		WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ?
 		GROUP BY bucket
 		ORDER BY bucket`, stepSeconds, stepSeconds, since.Unix())
 	if err != nil {
@@ -419,7 +424,7 @@ func (s *StateStore) alertTimeline(ctx context.Context, since time.Time) ([]time
 func (s *StateStore) DecisionStats(ctx context.Context) (*decisionDBStats, error) {
 	stats := &decisionDBStats{}
 
-	active := `until IS NULL OR CAST(strftime('%s', until) AS INTEGER) > CAST(strftime('%s', 'now') AS INTEGER)`
+	active := `until IS NULL OR CAST(strftime('%s', substr(until,1,19)) AS INTEGER) > CAST(strftime('%s', 'now') AS INTEGER)`
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(simulated), 0) FROM decisions WHERE `+active).

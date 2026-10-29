@@ -105,39 +105,39 @@ func newTestStateStore(t *testing.T) *StateStore {
 
 	exec(`INSERT INTO machines (created_at, updated_at, last_heartbeat, machine_id, password, ip_address, scenarios, version, is_validated, osname)
 	      VALUES (?, ?, ?, 'agent-1', 'x', '172.28.0.5', 'crowdsecurity/linux','v1.8.2', 1, 'debian')`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		now.String(), now.String(), now.String())
 	exec(`INSERT INTO machines (created_at, updated_at, machine_id, password, ip_address, scenarios, version, is_validated)
 	      VALUES (?, ?, 'ui-1', 'x', '172.28.0.6', '', 'v1.8.2', 1)`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		now.String(), now.String())
 
 	exec(`INSERT INTO bouncers (created_at, updated_at, name, api_key, revoked, ip_address, type, version, last_pull)
 	      VALUES (?, ?, 'fw-1', 'k', 0, '172.28.0.9', 'crowdsec-firewall-bouncer', 'v0.0.30', ?)`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Add(-time.Minute).Format(time.RFC3339Nano))
+		now.String(), now.String(), now.Add(-time.Minute).String())
 
 	// Two recent alerts, one old one outside the range.
 	exec(`INSERT INTO alerts (created_at, updated_at, scenario, events_count, source_ip, source_country, source_as_name, source_latitude, source_longitude, kind)
 	      VALUES (?, ?, 'crowdsecurity/ssh-bf', 5, '185.220.101.45', 'DE', 'Hetzner', 52.52, 13.40, 'crowdsec')`,
-		now.Add(-2*time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		now.Add(-2*time.Minute).String(), now.String())
 	exec(`INSERT INTO alerts (created_at, updated_at, scenario, events_count, source_ip, source_country, source_as_name, source_latitude, source_longitude, kind)
 	      VALUES (?, ?, 'crowdsecurity/http-probing', 3, '1.2.3.4', 'FR', 'OVH', 48.85, 2.35, 'crowdsec')`,
-		now.Add(-3*time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		now.Add(-3*time.Minute).String(), now.String())
 	exec(`INSERT INTO alerts (created_at, updated_at, scenario, events_count, source_ip, kind)
 	      VALUES (?, ?, 'crowdsecurity/ssh-bf', 100, '9.9.9.9', 'crowdsec')`,
-		now.Add(-72*time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		now.Add(-72*time.Hour).String(), now.String())
 
 	exec(`INSERT INTO decisions (created_at, updated_at, until, scenario, type, scope, value, origin, simulated)
 	      VALUES (?, ?, ?, 'crowdsecurity/ssh-bf', 'ban', 'Ip', '185.220.101.45', 'crowdsec', 0)`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Add(time.Hour).Format(time.RFC3339Nano))
+		now.String(), now.String(), now.Add(time.Hour).String())
 	exec(`INSERT INTO decisions (created_at, updated_at, until, scenario, type, scope, value, origin, simulated)
 	      VALUES (?, ?, ?, 'manual', 'ban', 'Range', '203.0.113.0/24', 'cscli', 0)`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Add(time.Hour).Format(time.RFC3339Nano))
+		now.String(), now.String(), now.Add(time.Hour).String())
 	exec(`INSERT INTO decisions (created_at, updated_at, until, scenario, type, scope, value, origin, simulated)
 	      VALUES (?, ?, ?, 'manual', 'captcha', 'Ip', '5.6.7.8', 'cscli', 1)`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Add(time.Hour).Format(time.RFC3339Nano))
+		now.String(), now.String(), now.Add(time.Hour).String())
 	// Expired: must not be counted as active.
 	exec(`INSERT INTO decisions (created_at, updated_at, until, scenario, type, scope, value, origin, simulated)
 	      VALUES (?, ?, ?, 'manual', 'ban', 'Ip', '7.7.7.7', 'cscli', 0)`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Add(-time.Hour).Format(time.RFC3339Nano))
+		now.String(), now.String(), now.Add(-time.Hour).String())
 
 	store, err := OpenStateStore(path)
 	require.NoError(t, err)
@@ -213,6 +213,40 @@ func TestStateStoreAlertStats(t *testing.T) {
 	}
 
 	require.Equal(t, 2, nonzero)
+}
+
+func TestStateStoreCountsBothTimestampFormats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapi.db")
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	require.NoError(t, err)
+	require.NoError(t, db.Ping())
+	_, err = db.Exec(testSchema)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+
+	// The engine writes Go's time format; older rows may be RFC3339. Both have
+	// to count, otherwise the dashboard silently shows zeros on a real database.
+	for _, created := range []string{
+		now.Add(-2 * time.Minute).String(),
+		now.Add(-time.Minute).Format(time.RFC3339Nano),
+	} {
+		_, err = db.Exec(`INSERT INTO alerts (created_at, updated_at, scenario, events_count, source_ip, kind)
+			VALUES (?, ?, 'crowdsecurity/ssh-bf', 1, '203.0.113.9', 'crowdsec')`, created, now.String())
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, db.Close())
+
+	store, err := OpenStateStore(path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = store.Close() })
+
+	stats, err := store.AlertStats(t.Context(), now.Add(-24*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Total)
 }
 
 func TestStateStoreDecisionStats(t *testing.T) {
