@@ -885,10 +885,23 @@ async function showAlert(id) {
 async function renderDecisions() {
   const view = $('#view');
 
+  const sources = [
+    ['', 'All'],
+    ['CAPI', 'Community'],
+    ['lists', 'Lists'],
+    ['crowdsec', 'Local'],
+    ['cscli', 'Manual'],
+  ];
+
   view.innerHTML = `
     <div class="page-header">
       <div><h2>Decisions</h2><p>What your remediators enforce.</p></div>
-      <div class="toolbar"><button class="btn" id="add-decision">Add decision</button></div>
+      <div class="toolbar">
+        <div class="chips" role="group" aria-label="Decision source">
+          ${sources.map(([value, label]) => `<button type="button" class="chip" data-source="${value}">${label}</button>`).join('')}
+        </div>
+        <button class="btn" id="add-decision">Add decision</button>
+      </div>
     </div>
     ${filterPanelOpen('decisions')}
         <form class="form-grid" id="decision-filters">
@@ -907,10 +920,76 @@ async function renderDecisions() {
       ${filterPanelClose()}
     <div class="panel"><div id="decisions-body">${spinner()}</div></div>`;
 
+  // One CAPI alert carries thousands of decisions, so rendering everything at
+  // once cost seconds on every refresh. Page the rows and sort the data, not
+  // the DOM, so sorting still covers rows that are not shown yet.
+  const pageSize = 200;
+  const page = { items: [], visible: pageSize, sortIndex: null, asc: true };
   let loadID = 0;
+
+  const keys = [
+    (d) => d.value, (d) => d.scope, (d) => d.country || '', (d) => d.as_name || '',
+    (d) => d.type, (d) => new Date(d.until || 0).getTime(), (d) => new Date(d.until || 0).getTime(),
+    (d) => d.scenario || '', (d) => d.origin || '', (d) => d.alert_id || 0,
+  ];
+
+  const sorted = () => {
+    if (page.sortIndex === null) return page.items;
+    const key = keys[page.sortIndex];
+    const direction = page.asc ? 1 : -1;
+    return [...page.items].sort((a, b) => {
+      const left = key(a);
+      const right = key(b);
+      if (typeof left === 'number' && typeof right === 'number') return (left - right) * direction;
+      return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' }) * direction;
+    });
+  };
+
+  const markSourceChip = (origin) => {
+    $$('.chips .chip').forEach((chip) => {
+      chip.classList.toggle('active', (chip.dataset.source || '') === (origin || ''));
+    });
+  };
+
+  const draw = () => {
+    const body = $('#decisions-body');
+    if (!body) return;
+    const items = sorted();
+    const slice = items.slice(0, page.visible);
+    const byId = new Map(items.map((item) => [item.id, item]));
+
+    body.innerHTML = items.length === 0
+      ? '<div class="empty">No decisions</div>'
+      : `${renderDecisionsTable(slice, true, { sortIndex: page.sortIndex, asc: page.asc })}
+         <p class="result-count">Showing ${fmtNum(slice.length)} of ${fmtNum(items.length)}${page.sortIndex === null ? '' : ' · sorted'}</p>
+         ${slice.length < items.length ? `<div class="table-tools"><button class="btn secondary" id="decisions-more" type="button">Show ${fmtNum(Math.min(pageSize, items.length - slice.length))} more</button></div>` : ''}`;
+
+    $$('#decisions-body th[data-col]', body).forEach((th) => {
+      $('button', th)?.addEventListener('click', () => {
+        const index = Number(th.dataset.col);
+        page.asc = page.sortIndex !== index ? true : !page.asc;
+        page.sortIndex = index;
+        draw();
+      });
+    });
+
+    $('#decisions-more')?.addEventListener('click', () => {
+      page.visible += pageSize;
+      draw();
+    });
+
+    $$('#decisions-body tr[data-decision-id]', body).forEach((row) => {
+      const button = $('button[data-delete]', row);
+      if (!button) return;
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await deleteDecision(byId.get(Number(row.dataset.decisionId)), load, button);
+      });
+    });
+  };
+
   const load = async () => {
     const id = ++loadID;
-    const body = $('#decisions-body');
     const params = new URLSearchParams();
     filterFields.decisions.map((key) => [key, `#d-${key}`]).forEach(([key, sel]) => {
       const value = $(sel)?.value.trim();
@@ -918,28 +997,23 @@ async function renderDecisions() {
     });
     rememberFilters('decisions', params);
     updateFilterBadge('decisions');
+    markSourceChip(params.get('origin'));
 
-    $('#decisions-body').innerHTML = spinner();
+    const body = $('#decisions-body');
+    if (body) body.innerHTML = spinner();
 
     try {
       const data = await api(`/api/decisions?${params}`);
-      if (id !== loadID || !body.isConnected) return;
-      body.innerHTML = renderDecisionsTable(data.decisions) + resultCount(data.decisions.length, data.alert_limit || Number(params.get('limit')) || 500, data.limited || false);
-      enhanceTables(body);
+      if (id !== loadID || !$('#decisions-body')?.isConnected) return;
+      page.items = data.decisions || [];
+      page.visible = pageSize;
+      draw();
       mountRefresh(data.generated_at || new Date().toISOString());
-
-      const decisionsById = new Map((data.decisions || []).map((item) => [item.id, item]));
-      $$('#decisions-body tr[data-decision-id]').forEach((row) => {
-        const button = $('button[data-delete]', row);
-        if (button) {
-          button.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            await deleteDecision(decisionsById.get(Number(row.dataset.decisionId)), load, button);
-          });
-        }
-      });
     } catch (error) {
-      if (id === loadID && body.isConnected && error.name !== 'AbortError') body.innerHTML = errorBox(error.message, true);
+      if (id === loadID && error.name !== 'AbortError') {
+        const body2 = $('#decisions-body');
+        if (body2) body2.innerHTML = errorBox(error.message, true);
+      }
     }
   };
 
@@ -948,15 +1022,24 @@ async function renderDecisions() {
     load();
   });
 
+  $$('.chips .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      $('#d-origin').value = chip.dataset.source;
+      load();
+    });
+  });
+
   $('#add-decision').addEventListener('click', () => showDecisionForm('local', load));
 
   Object.entries(state.filters.decisions).forEach(([key, value]) => { const input = $(`#d-${key}`); if (input) input.value = value; });
+  markSourceChip(state.filters.decisions.origin || '');
   await load();
 }
 
-function renderDecisionsTable(decisions, actionable = true) {
+function renderDecisionsTable(decisions, actionable = true, view = {}) {
   if (!decisions || decisions.length === 0) return '<div class="empty">No decisions</div>';
 
+  const headers = ['Value', 'Scope', 'Country', 'AS', 'Type', 'Remaining', 'Until', 'Scenario', 'Origin', 'Alert'];
   const rows = decisions.map((decision) => `
     <tr data-decision-id="${decision.id}" data-origin="${esc(decision.origin)}">
       <td class="mono">${decision.scope === 'ip' ? `<button class="table-link" data-inspect-ip="${esc(decision.value)}">${esc(decision.value)}</button>` : `<span data-copy="${esc(decision.value)}" title="Click to copy">${esc(decision.value)}</span>`}</td>
@@ -970,8 +1053,14 @@ function renderDecisionsTable(decisions, actionable = true) {
       <td>${decision.alert_id ? `<button class="table-link" data-alert-id="${decision.alert_id}">Alert #${decision.alert_id}</button>` : '—'}</td>${actionable ? '<td><button class="btn danger" data-delete style="padding:4px 9px;font-size:12px">Unban</button></td>' : ''}
     </tr>`).join('');
 
-  return `<div class="table-wrap"><table>
-    <thead><tr><th>Value</th><th>Scope</th><th>Country</th><th>AS</th><th>Type</th><th>Remaining</th><th>Until</th><th>Scenario</th><th>Origin</th><th>Alert</th>${actionable ? '<th></th>' : ''}</tr></thead>
+  const head = headers.map((label, index) => {
+    const active = view.sortIndex === index;
+    const sort = active ? (view.asc ? 'ascending' : 'descending') : null;
+    return `<th data-col="${index}"${sort ? ` aria-sort="${sort}"` : ''}><button class="table-sort" type="button" aria-label="Sort by ${esc(label)}">${esc(label)}</button></th>`;
+  }).join('');
+
+  return `<div class="table-wrap"><table data-no-enhance>
+    <thead><tr>${head}${actionable ? '<th></th>' : ''}</tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 

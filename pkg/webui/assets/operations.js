@@ -88,7 +88,7 @@ function sortDate(iso) {
 
 function enhanceTables(root = $('#view')) {
   $$('table', root).forEach((table) => {
-    if (table.dataset.tools) return;
+    if (table.dataset.tools || table.hasAttribute('data-no-enhance')) return;
     table.dataset.tools = 'true';
     $$('thead th', table).forEach((th, index) => {
       const label = th.textContent.trim();
