@@ -110,9 +110,13 @@ fi
 # stopping the services first keeps the SQLite files consistent.
 stopped=0
 cleanup() {
-	if [ "$stopped" -eq 1 ]; then
-		printf 'update: restarting the previous stack\n' >&2
-		docker compose up -d || true
+	[ "$stopped" -eq 1 ] || return 0
+	printf 'update: restarting the previous stack\n' >&2
+	# If $image was pruned, compose tries to pull and fails: tag what we just
+	# built and retry, rather than leaving the stack down.
+	if ! docker compose up -d; then
+		printf 'update: start failed, tagging %s as %s and retrying\n' "$built" "$image" >&2
+		docker tag "$built" "$image" && docker compose up -d
 	fi
 }
 trap cleanup EXIT INT TERM
@@ -131,7 +135,7 @@ if [ "$backup" -eq 1 ]; then
 			rm -f "$archive.partial"
 			if ! docker run --rm --user 0:0 \
 				-v "$PWD/config:/src/config:ro" -v "$PWD/data:/src/data:ro" -v "$PWD:/out" \
-				"$image" sh -c "tar czf '/out/$archive.partial' -C /src config data && chmod 644 '/out/$archive.partial'"; then
+				"$built" sh -c "tar czf '/out/$archive.partial' -C /src config data && chmod 644 '/out/$archive.partial'"; then
 				printf 'update: backup failed, nothing was switched\n' >&2
 				exit 1
 			fi
@@ -140,9 +144,13 @@ if [ "$backup" -eq 1 ]; then
 	fi
 fi
 
+docker image inspect "$built" >/dev/null 2>&1 || die "no image $built (build failed?)"
+
 if docker image inspect "$image" >/dev/null 2>&1; then
 	say "keeping the current image as $previous"
 	[ "$dry" -eq 1 ] || docker tag "$image" "$previous"
+else
+	say "no tag $image yet (pruned?); nothing to keep as $previous"
 fi
 
 say "pointing $image at $built"
