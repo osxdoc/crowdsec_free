@@ -293,7 +293,7 @@ button { cursor: pointer; }
 }
 .brand .brand-mark svg { width: 17px; height: 17px; }
 
-.brand-text { display: grid; line-height: 1.2; }
+.brand-text { display: grid; line-height: 1.2; white-space: nowrap; }
 .brand-text strong { font-size: 14px; font-weight: 620; letter-spacing: -0.01em; }
 .brand-text small { color: var(--muted); font-size: 11px; letter-spacing: 0.01em; }
 
@@ -367,7 +367,7 @@ button { cursor: pointer; }
   text-transform: uppercase;
 }
 
-.account-text { display: grid; min-width: 0; line-height: 1.25; }
+.account-text { display: grid; min-width: 0; line-height: 1.25; white-space: nowrap; }
 .account-text strong {
   font-size: 12.5px;
   font-weight: 600;
@@ -388,6 +388,101 @@ button { cursor: pointer; }
   padding: 28px 32px 64px;
 }
 .content:focus { outline: none; }
+
+/* ---------------- sidebar: rail + hover overlay ---------------- */
+
+.brand { position: relative; }
+.brand-text { transition: opacity 140ms var(--ease-out); }
+
+.collapse-btn {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  opacity: 0.5;
+  transition: opacity 140ms var(--ease-out), background var(--dur) var(--ease-out);
+}
+.sidebar:hover .collapse-btn,
+.collapse-btn:hover,
+.collapse-btn:focus-visible { opacity: 1; }
+.collapse-btn svg { width: 15px; height: 15px; }
+
+/* Collapsed: a 68px icon rail. */
+.app.rail { grid-template-columns: 68px minmax(0, 1fr); }
+
+.app.rail .sidebar {
+  width: 68px;
+  padding-inline: 10px;
+  overflow: visible;
+}
+.app.rail .brand { position: relative; justify-content: center; padding: 2px 0 30px; }
+.app.rail .brand-text,
+.app.rail .nav-group,
+.app.rail .account-text,
+.app.rail .account-actions { display: none; }
+/* In the rail the toggle sits under the logo, so it never overlaps the content. */
+.app.rail .collapse-btn {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  opacity: 1;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.app.rail .collapse-btn:hover { background: var(--surface-hover); color: var(--text); }
+.app.rail .collapse-btn svg { width: 12px; height: 12px; }
+.app.rail .nav a { justify-content: center; padding-inline: 0; }
+.app.rail .nav a span { display: none; }
+.app.rail .nav a svg { width: 18px; height: 18px; }
+.app.rail .nav-group + .nav a { margin-top: 6px; }
+.app.rail .sidebar-footer { justify-content: center; padding-inline: 0; }
+
+/* Rail hovered or focused: fly out over the content, no reflow. */
+.app.rail.rail-hover .sidebar {
+  width: 244px;
+  padding: 18px 12px 12px;
+  box-shadow: var(--shadow-lg);
+  overflow: visible;
+}
+.app.rail.rail-hover .brand { justify-content: flex-start; padding: 2px 8px 18px; }
+/* `display: revert` would fall back to the UA default, not to the rule above. */
+.app.rail.rail-hover .brand-text,
+.app.rail.rail-hover .account-text { display: grid; }
+.app.rail.rail-hover .nav-group { display: block; }
+.app.rail.rail-hover .account-actions { display: flex; }
+.app.rail.rail-hover .nav a { justify-content: flex-start; padding-inline: 10px; }
+.app.rail.rail-hover .nav a span { display: inline; }
+.app.rail.rail-hover .sidebar-footer { justify-content: flex-start; padding: 12px 6px 4px; }
+.app.rail.rail-hover .collapse-btn {
+  position: absolute;
+  inset: -4px 6px auto auto;
+  width: 26px;
+  height: 26px;
+  opacity: 1;
+  transform: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The rail never pushes the drawer behaviour on phones. */
+@media (max-width: 860px) {
+  .app.rail,
+  .app.rail.rail-hover { grid-template-columns: minmax(0, 1fr); }
+  .app.rail .sidebar,
+  .app.rail.rail-hover .sidebar { width: min(280px, 84vw); padding: 18px 12px 12px; }
+  .app.rail .brand-text, .app.rail .account-text { display: grid; }
+  .app.rail .nav-group { display: block; }
+  .app.rail .nav a span { display: inline; }
+  .app.rail .account-actions { display: flex; }
+  .app.rail .nav a { justify-content: flex-start; padding-inline: 10px; }
+  .collapse-btn { display: none; }
+}
 
 /* ---------------- page header ---------------- */
 
@@ -866,11 +961,52 @@ tbody td .btn { height: 26px; padding: 0 9px; font-size: 12px; }
 
 /* ---------------- charts & bar lists ---------------- */
 
+.chart-frame { position: relative; }
 .chart {
   display: block;
   width: 100%;
   height: 170px;
+  touch-action: pan-y;
 }
+.chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+.chart-hover { pointer-events: none; }
+.chart-hover[data-visible="false"] { display: none; }
+.chart-crosshair {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+}
+.chart-point {
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.chart-tip {
+  position: absolute;
+  top: 0;
+  display: grid;
+  gap: 1px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -110%);
+  transition: opacity 120ms var(--ease-out);
+}
+.chart-tip[hidden] { display: none; }
+.chart-tip[data-edge="start"] { transform: translate(0, -110%); }
+.chart-tip[data-edge="end"] { transform: translate(-100%, -110%); }
+.chart-tip strong { font-size: 13px; font-weight: 640; font-variant-numeric: tabular-nums; }
+.chart-tip span { color: var(--muted); font-size: 11.5px; }
 .chart-legend {
   display: flex;
   justify-content: space-between;
@@ -1447,7 +1583,8 @@ body.modal-open { overflow: hidden; }
 }
 
 @media (hover: none) {
-  .btn:hover, .icon-btn:hover, .nav a:hover { background: revert; }
+  .btn:hover, .icon-btn:hover, .nav a:hover { background: transparent; }
+  .btn.secondary:hover { background: var(--surface); }
 }
 
 /* ---------------- reduced motion / transparency ---------------- */

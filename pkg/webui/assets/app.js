@@ -259,6 +259,68 @@ $('#theme-toggle')?.addEventListener('click', () => {
   applyTheme(next);
 });
 
+/* ---------------- sidebar ---------------- */
+
+// The sidebar has three states: full, collapsed to an icon rail, and - while the
+// rail is hovered or focused - an overlay that floats over the content without
+// reflowing it. The choice is remembered per browser.
+const SIDEBAR_KEY = 'cswebui.sidebar';
+let sidebarCollapsed = false;
+try { sidebarCollapsed = localStorage.getItem(SIDEBAR_KEY) === 'collapsed'; } catch { /* ignore */ }
+
+function applySidebar(collapsed) {
+  sidebarCollapsed = collapsed;
+  const app = $('#app');
+  app?.classList.toggle('rail', collapsed);
+  const button = $('#nav-collapse');
+  if (button) {
+    button.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+    button.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    button.setAttribute('aria-expanded', String(!collapsed));
+    $('use', button)?.setAttribute('href', collapsed ? '#i-expand' : '#i-collapse');
+  }
+  $$('.nav a').forEach((link) => {
+    const label = $('span', link)?.textContent?.trim();
+    if (!label) return;
+    if (collapsed) link.title = label;
+    else link.removeAttribute('title');
+  });
+}
+
+applySidebar(sidebarCollapsed);
+
+$('#nav-collapse')?.addEventListener('click', () => {
+  const next = !sidebarCollapsed;
+  try { localStorage.setItem(SIDEBAR_KEY, next ? 'collapsed' : 'expanded'); } catch { /* ignore */ }
+  applySidebar(next);
+  // The rail opens on hover; after expanding, the pointer is already inside it.
+  setRailHover(false);
+});
+
+// Only the rail overlays on hover - a full sidebar must not shift the layout.
+// Returns true when the overlay was showing, so Escape can consume the event.
+function setRailHover(open) {
+  const app = $('#app');
+  const wasOpen = Boolean(app?.classList.contains('rail-hover'));
+  app?.classList.toggle('rail-hover', Boolean(open && sidebarCollapsed));
+  return wasOpen;
+}
+
+function mountRailOverlay() {
+  const sidebar = $('.sidebar');
+  if (!sidebar) return;
+  const enter = () => { if (sidebarCollapsed) setRailHover(true); };
+  const leave = () => setRailHover(false);
+  sidebar.addEventListener('pointerenter', enter);
+  sidebar.addEventListener('pointerleave', leave);
+  sidebar.addEventListener('focusin', enter);
+  sidebar.addEventListener('focusout', (event) => {
+    if (!sidebar.contains(event.relatedTarget)) leave();
+  });
+}
+
+mountRailOverlay();
+
 /* ---------------- session ---------------- */
 
 function showLogin() {
@@ -400,8 +462,9 @@ async function copyText(text) {
 }
 
 $('#nav-toggle').addEventListener('click', () => setNavOpen($('#nav-toggle').getAttribute('aria-expanded') !== 'true'));
-document.addEventListener('keydown', (event) => {
+window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (setRailHover(false)) return;
   if (!$('.sidebar')?.classList.contains('nav-open')) return;
   setNavOpen(false);
   $('#nav-toggle').focus();
@@ -455,6 +518,7 @@ function route() {
   routes[state.route]().then(() => {
     if (signal.aborted) return;
     enhanceTables();
+    mountChartHover();
     mountRefresh(state.cache.updatedAt || new Date().toISOString());
   }).catch((error) => {
     if (signal.aborted) return;
@@ -759,17 +823,98 @@ function renderChart(points) {
   }).join('');
 
   return `
-    <svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Alerts over time">
-      <defs>
-        <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
-          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.01"/>
-        </linearGradient>
-      </defs>
-      ${grid}
-      <path d="${area}" fill="url(#chart-fill)"/>
-      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-    </svg>`;
+    <div class="chart-frame" data-chart>
+      <svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Alerts over time" tabindex="0">
+        <defs>
+          <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.01"/>
+          </linearGradient>
+        </defs>
+        ${grid}
+        <path d="${area}" fill="url(#chart-fill)"/>
+        <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        <g class="chart-hover" data-visible="false">
+          <line class="chart-crosshair" x1="-10" y1="-10" x2="-10" y2="-10" vector-effect="non-scaling-stroke"/>
+          <circle class="chart-point" cx="-10" cy="-10" r="2.4" vector-effect="non-scaling-stroke"/>
+        </g>
+      </svg>
+      <output class="chart-tip" hidden></output>
+    </div>
+    <script type="application/json" class="chart-data">${JSON.stringify(points.map((point, index) => ({
+      x: coords[index][0], y: coords[index][1], count: point.count, time: point.time,
+    }))).replace(/</g, '\\u003c')}</script>`;
+}
+
+// Nearest sample for a pointer position, so the tooltip never shows invented
+// values between buckets.
+function chartIndexAt(ratio, count) {
+  if (!count) return -1;
+  return Math.max(0, Math.min(count - 1, Math.round(ratio * (count - 1))));
+}
+
+// Pointer readout for the timeline: snapping to the nearest sample keeps the
+// tooltip on real data instead of interpolating between buckets.
+function mountChartHover(root = $('#view')) {
+  $$('[data-chart]', root).forEach((frame) => {
+    const svg = $('svg', frame);
+    const dataNode = frame.nextElementSibling;
+    const tip = $('.chart-tip', frame);
+    const hover = $('.chart-hover', frame);
+    if (!svg || !dataNode || !tip || !hover) return;
+
+    let samples = [];
+    try { samples = JSON.parse(dataNode.textContent); } catch { return; }
+    if (!samples.length) return;
+
+    const crosshair = $('.chart-crosshair', frame);
+    const dot = $('.chart-point', frame);
+    const viewWidth = Number(svg.viewBox.baseVal.width) || 800;
+    let index = -1;
+
+    const show = (next) => {
+      index = Math.max(0, Math.min(samples.length - 1, next));
+      const sample = samples[index];
+      hover.dataset.visible = 'true';
+      crosshair.setAttribute('x1', sample.x);
+      crosshair.setAttribute('x2', sample.x);
+      crosshair.setAttribute('y1', 0);
+      crosshair.setAttribute('y2', svg.viewBox.baseVal.height || 170);
+      dot.setAttribute('cx', sample.x);
+      dot.setAttribute('cy', sample.y);
+      tip.hidden = false;
+      tip.innerHTML = `<strong>${fmtNum(sample.count)}</strong> alert(s)<span>${esc(chartTime(sample.time))}</span>`;
+      // Keep the tooltip inside the frame instead of clipping at the edges.
+      const ratio = sample.x / viewWidth;
+      tip.style.left = `${(ratio * 100).toFixed(2)}%`;
+      tip.dataset.edge = ratio < 0.12 ? 'start' : ratio > 0.88 ? 'end' : 'mid';
+    };
+
+    const hide = () => {
+      index = -1;
+      hover.dataset.visible = 'false';
+      hover.querySelector('.chart-crosshair').setAttribute('x1', -10);
+      hover.querySelector('.chart-point').setAttribute('cx', -10);
+      tip.hidden = true;
+    };
+
+    const pick = (clientX) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width) return;
+      show(chartIndexAt((clientX - rect.left) / rect.width, samples.length));
+    };
+
+    svg.addEventListener('pointermove', (event) => pick(event.clientX));
+    svg.addEventListener('pointerdown', (event) => pick(event.clientX));
+    svg.addEventListener('pointerleave', hide);
+    svg.addEventListener('focus', () => show(index < 0 ? samples.length - 1 : index));
+    svg.addEventListener('blur', hide);
+    svg.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowRight') { show(index + 1); event.preventDefault(); }
+      else if (event.key === 'ArrowLeft') { show(index - 1); event.preventDefault(); }
+      else if (event.key === 'Escape') hide();
+    });
+  });
 }
 
 function renderBarList(items, drilldown = null) {

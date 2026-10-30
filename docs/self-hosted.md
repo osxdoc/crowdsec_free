@@ -109,6 +109,12 @@ running; the configuration editor is never refreshed automatically.
 The UI follows the system light/dark preference and remembers an explicit choice
 from the sidebar toggle; the choice is stored per browser.
 
+The sidebar collapses to a 68px icon rail with the button next to the logo. While
+the rail is hovered or focused it flies out over the content as an overlay, so the
+page does not reflow; Escape closes it. The collapsed/expanded choice is stored per
+browser. The alert timeline has a pointer readout — crosshair, dot and the count
+for that bucket — that snaps to real samples and also works with arrow keys.
+
 Allowlist writes and hub changes require `cscli` in the web UI service's `PATH`,
 with access to the local engine configuration and database. Full configuration
 checks additionally require `crowdsec` in `PATH`. YAML syntax is checked on save;
