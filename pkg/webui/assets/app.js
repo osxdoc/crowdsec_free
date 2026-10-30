@@ -411,6 +411,151 @@ const routes = {
   config: renderConfig,
 };
 
+/* ---------------- command palette ---------------- */
+
+const paletteActions = [
+  { id: 'dashboard', label: 'Dashboard', hint: 'Overview', keywords: 'home overview start' },
+  { id: 'alerts', label: 'Alerts', hint: 'Detected scenarios', keywords: 'events detections' },
+  { id: 'decisions', label: 'Decisions', hint: 'Active bans', keywords: 'ban captcha unban' },
+  { id: 'geo', label: 'Geo', hint: 'Origin map', keywords: 'map countries world' },
+  { id: 'blocklist', label: 'Shared blocklist', hint: 'Decisions from the blocklist server', keywords: 'capi community shared' },
+  { id: 'hub', label: 'Hub', hint: 'Parsers, scenarios, collections', keywords: 'install upgrade collections' },
+  { id: 'allowlists', label: 'Allowlists', hint: 'Values that are never blocked', keywords: 'whitelist exempt allow' },
+  { id: 'config', label: 'Configuration', hint: 'Edit files and reload', keywords: 'yaml edit reload' },
+  { id: 'inspect', label: 'IP lookup', hint: 'Everything about one address', keywords: 'search ip lookup' },
+  { id: 'infrastructure', label: 'Infrastructure', hint: 'Machines and bouncers', keywords: 'agents bouncers' },
+  { id: 'metrics', label: 'Metrics', hint: 'Parsers, buckets, counters', keywords: 'prometheus stats' },
+  { id: 'new-decision', label: 'Add decision', hint: 'Ban or captcha an address', keywords: 'ban block manual' },
+  { id: 'theme', label: 'Toggle theme', hint: 'Light or dark', keywords: 'dark light appearance' },
+  { id: 'collapse', label: 'Collapse sidebar', hint: 'Icon rail or full width', keywords: 'rail expand sidebar' },
+];
+
+// Substring match over label, hint and keywords; every word has to match so
+// "ban ip" still finds the manual decision form. Ranking puts label matches
+// before keyword matches: typing "ban" should offer "Add decision", not the
+// page that merely lists bans.
+function matchPaletteActions(query, actions = paletteActions) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return actions;
+
+  const scored = [];
+
+  for (const action of actions) {
+    const label = action.label.toLowerCase();
+    const haystack = `${label} ${action.hint} ${action.keywords}`.toLowerCase();
+    if (!words.every((word) => haystack.includes(word))) continue;
+
+    const labelHits = words.filter((word) => label.includes(word)).length;
+    const prefix = label.startsWith(words[0]) ? 1 : 0;
+    scored.push({ action, score: labelHits * 2 + prefix });
+  }
+
+  // Stable within equal scores: the declaration order stays the tie-breaker.
+  return scored
+    .map((entry, index) => ({ ...entry, index }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.action);
+}
+
+let paletteIndex = 0;
+let paletteMatches = paletteActions;
+
+function closePalette() {
+  const dialog = $('#modal-root dialog');
+  if (dialog?.dataset.palette) closeModal();
+}
+
+function runPaletteAction(id) {
+  closePalette();
+
+  switch (id) {
+    case 'new-decision':
+      if (state.route !== 'decisions') location.hash = '#/decisions';
+      showDecisionForm('local', () => route());
+      return;
+    case 'theme':
+      $('#theme-toggle')?.click();
+      return;
+    case 'collapse':
+      $('#nav-collapse')?.click();
+      return;
+    default: {
+      const hash = `#/${id}`;
+      if (location.hash === hash) route(); else location.hash = hash;
+    }
+  }
+}
+
+function drawPalette(query = '') {
+  const list = $('#palette-list');
+  if (!list) return;
+  paletteMatches = matchPaletteActions(query);
+  paletteIndex = Math.min(paletteIndex, Math.max(0, paletteMatches.length - 1));
+
+  list.innerHTML = paletteMatches.length
+    ? paletteMatches.map((action, index) => `<li>
+        <button class="palette-item${index === paletteIndex ? ' active' : ''}" type="button"
+          data-palette-id="${esc(action.id)}" aria-selected="${index === paletteIndex}">
+          <span class="palette-label">${esc(action.label)}</span>
+          <span class="palette-hint">${esc(action.hint)}</span>
+        </button>
+      </li>`).join('')
+    : '<li class="palette-empty">Nothing matches</li>';
+
+  $$('[data-palette-id]', list).forEach((button, index) => {
+    button.addEventListener('pointermove', () => {
+      if (paletteIndex === index) return;
+      paletteIndex = index;
+      $$('.palette-item', list).forEach((item, i) => {
+        item.classList.toggle('active', i === index);
+        item.setAttribute('aria-selected', String(i === index));
+      });
+    });
+    button.addEventListener('click', () => runPaletteAction(button.dataset.paletteId));
+  });
+}
+
+function openPalette() {
+  paletteIndex = 0;
+  openModal('Search', `
+    <div class="palette">
+      <input id="palette-input" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Jump to a page or run a command" aria-label="Search pages and commands"
+        aria-controls="palette-list" role="combobox" aria-expanded="true">
+      <ul id="palette-list" class="palette-list" role="listbox" aria-label="Results"></ul>
+      <p class="hint palette-foot"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>Enter</kbd> to run · <kbd>Esc</kbd> to close</p>
+    </div>`, (root) => {
+    $('dialog', root).dataset.palette = 'true';
+    const input = $('#palette-input', root);
+    input.addEventListener('input', () => { paletteIndex = 0; drawPalette(input.value); });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (paletteMatches.length === 0) return;
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        paletteIndex = (paletteIndex + delta + paletteMatches.length) % paletteMatches.length;
+        drawPalette(input.value);
+        $('.palette-item.active')?.scrollIntoView({ block: 'nearest' });
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        const action = paletteMatches[paletteIndex];
+        if (action) runPaletteAction(action.id);
+      }
+    });
+    drawPalette('');
+    input.focus();
+  });
+}
+
+window.addEventListener('keydown', (event) => {
+  const isPaletteKey = (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'k';
+  if (!isPaletteKey || !state.user) return;
+  event.preventDefault();
+  if ($('#modal-root dialog[data-palette]')) closePalette(); else openPalette();
+});
+
+$('#palette-hint')?.addEventListener('click', openPalette);
+
 function discardConfigChanges() {
   return !isDirty() || confirm('Discard unsaved changes?');
 }
@@ -473,6 +618,18 @@ $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $
 $('#nav-scrim')?.addEventListener('click', () => setNavOpen(false));
 
 $('#view').addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove-filter]');
+  if (remove) {
+    removeFilter(remove.dataset.filterKind, remove.dataset.removeFilter);
+    return;
+  }
+  const clear = event.target.closest('[data-clear-filters]');
+  if (clear) {
+    rememberFilters(clear.dataset.filterKind, new URLSearchParams());
+    if (state.route === clear.dataset.filterKind) route();
+    return;
+  }
+
   if (event.target.closest('[data-retry]')) { route(); return; }
   const copy = event.target.closest('[data-copy]');
   if (copy) { copyText(copy.dataset.copy); return; }
@@ -638,9 +795,9 @@ async function renderDashboard() {
     ${strip}
 
     <div class="panel">
-      <div class="panel-head"><h3>Alerts over time</h3><span class="hint">${esc(state.range)}</span></div>
+      <div class="panel-head"><h3>Alerts over time</h3><span class="hint">${esc(state.range)} · by scenario</span></div>
       <div class="panel-body">
-        ${alertsOk ? renderChart(data.alerts.timeline) : '<div class="empty">Alert data unavailable</div>'}
+        ${alertsOk ? renderStackedChart(data.alerts.timeline, data.alerts.timeline_scenarios) : '<div class="empty">Alert data unavailable</div>'}
         <div class="chart-legend"><span>${data.alerts.timeline.length ? chartTime(data.alerts.timeline[0].time) : ''}</span><span>peak ${fmtNum(Math.max(0, ...data.alerts.timeline.map((point) => point.count)))}</span><span>${data.alerts.timeline.length ? chartTime(data.alerts.timeline[data.alerts.timeline.length - 1].time) : ''}</span></div>
       </div>
     </div>
@@ -654,8 +811,13 @@ async function renderDashboard() {
     </div>
 
     <div class="grid-2">
-      ${section('Top scenarios', renderBarList(data.alerts.by_scenario, ['alerts', 'scenario']))}
-      ${section('Decisions by origin', renderBarList(data.decisions.by_origin, ['decisions', 'origin']))}
+      ${section('Alerts by scenario', renderDonut(data.alerts.by_scenario, { total: data.alerts.total, unit: 'alerts' }))}
+      ${section('Decisions by origin', renderDonut(data.decisions.by_origin, { total: data.decisions.total, unit: 'decisions' }))}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>When the active bans lapse</h3><span class="hint">time until expiry</span></div>
+      <div class="panel-body" id="expiry-body">${spinner()}</div>
     </div>
 
     <div class="panel">
@@ -689,6 +851,23 @@ async function renderDashboard() {
 
     ${!db ? '<p class="hint mt-16">LAPI database not readable: machine/bouncer and geo aggregates are limited. Set <code>data.db_path</code>.</p>' : ''}`;
 
+  // The expiry horizon needs the decision list, which the overview does not
+  // carry; load it separately and keep the panel honest about failures.
+  api('/api/decisions?limit=5000')
+    .then((decisions) => {
+      const body = $('#expiry-body');
+      if (!body?.isConnected) return;
+      body.innerHTML = renderExpiryHorizon(decisions.decisions || [])
+        + ((decisions.decisions || []).length >= 5000
+          ? '<p class="hint mt-16">Based on the 5,000 most recent decisions; retrieval limit reached.</p>'
+          : '');
+    })
+    .catch((error) => {
+      if (error.name === 'AbortError') return;
+      const body = $('#expiry-body');
+      if (body?.isConnected) body.innerHTML = errorBox(error.message, true);
+    });
+
   $('#onboarding-dismiss')?.addEventListener('click', () => {
     try { localStorage.setItem('cswebui.onboarding.dismissed', '1'); } catch { /* ignore */ }
     $('#onboarding')?.remove();
@@ -709,6 +888,31 @@ function filterPanelOpen(kind) {
   return `<details class="panel filters" data-filters="${kind}"${count ? ' open' : ''}>
     <summary><span>Filters</span><span class="filter-count">${count ? `${count} active` : ''}</span></summary>
     <div class="panel-body">`;
+}
+
+const filterLabels = {
+  scenario: 'Scenario', ip: 'IP', value: 'Value', contains: 'Contains', origin: 'Origin',
+  kind: 'Kind', since: 'Period', type: 'Type', range: 'Range', scope: 'Scope',
+  decision_type: 'Decision type', has_active_decision: 'Active decision',
+  include_capi: 'Shared alerts', limit: 'Limit',
+};
+
+// Removable chips for whatever is filtered, so a short result set explains
+// itself instead of looking like missing data.
+function filterChips(kind) {
+  const chips = activeFilterChips(kind);
+  if (chips.length === 0) return '';
+
+  return `<div class="filter-chips" data-chips="${kind}">
+    ${chips.map(({ key, value }) => `<button class="chip chip-removable" type="button"
+      data-remove-filter="${esc(key)}" data-filter-kind="${esc(kind)}"
+      aria-label="Remove filter ${esc(filterLabels[key] || key)}: ${esc(value)}">
+      <span class="chip-key">${esc(filterLabels[key] || key)}</span>
+      <span class="chip-value">${esc(value === 'true' ? 'yes' : value === 'false' ? 'no' : value)}</span>
+      <span class="chip-x" aria-hidden="true">×</span>
+    </button>`).join('')}
+    <button class="chip chip-clear" type="button" data-filter-kind="${esc(kind)}" data-clear-filters>Clear all</button>
+  </div>`;
 }
 
 function filterPanelClose() {
@@ -858,7 +1062,13 @@ function chartIndexAt(ratio, count) {
 function mountChartHover(root = $('#view')) {
   $$('[data-chart]', root).forEach((frame) => {
     const svg = $('svg', frame);
-    const dataNode = frame.nextElementSibling;
+    // The legend may sit between the frame and the payload; look for the script
+    // instead of assuming the next sibling.
+    const dataNode = (() => {
+      let node = frame.nextElementSibling;
+      while (node && !node.matches?.('.chart-data')) node = node.nextElementSibling;
+      return node;
+    })();
     const tip = $('.chart-tip', frame);
     const hover = $('.chart-hover', frame);
     if (!svg || !dataNode || !tip || !hover) return;
@@ -880,10 +1090,20 @@ function mountChartHover(root = $('#view')) {
       crosshair.setAttribute('x2', sample.x);
       crosshair.setAttribute('y1', 0);
       crosshair.setAttribute('y2', svg.viewBox.baseVal.height || 170);
-      dot.setAttribute('cx', sample.x);
-      dot.setAttribute('cy', sample.y);
+      if (dot) {
+        dot.setAttribute('cx', sample.x);
+        dot.setAttribute('cy', sample.y);
+      }
       tip.hidden = false;
-      tip.innerHTML = `<strong>${fmtNum(sample.count)}</strong> alert(s)<span>${esc(chartTime(sample.time))}</span>`;
+      // Stacked buckets list their bands, biggest first: the total alone hides
+      // which scenario caused the spike.
+      const bands = Object.entries(sample.breakdown || {})
+        .filter(([, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([name, count]) => `<span class="tip-band"><span>${esc(name)}</span><strong>${fmtNum(count)}</strong></span>`)
+        .join('');
+      tip.innerHTML = `<strong>${fmtNum(sample.count)}</strong> alert(s)<span>${esc(chartTime(sample.time))}</span>${bands ? `<span class="tip-bands">${bands}</span>` : ''}`;
       // Keep the tooltip inside the frame instead of clipping at the edges.
       const ratio = sample.x / viewWidth;
       tip.style.left = `${(ratio * 100).toFixed(2)}%`;
@@ -893,8 +1113,8 @@ function mountChartHover(root = $('#view')) {
     const hide = () => {
       index = -1;
       hover.dataset.visible = 'false';
-      hover.querySelector('.chart-crosshair').setAttribute('x1', -10);
-      hover.querySelector('.chart-point').setAttribute('cx', -10);
+      hover.querySelector('.chart-crosshair')?.setAttribute('x1', -10);
+      hover.querySelector('.chart-point')?.setAttribute('cx', -10);
       tip.hidden = true;
     };
 
@@ -915,6 +1135,174 @@ function mountChartHover(root = $('#view')) {
       else if (event.key === 'Escape') hide();
     });
   });
+}
+
+// Palettes carry meaning only through the legend: never colour-only encoding.
+const seriesColors = ['var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)', 'var(--c6)'];
+
+function colorFor(index) {
+  return seriesColors[index % seriesColors.length];
+}
+
+// Rounded stacked bands. Gaps between bands come from the surface colour, so
+// the chart reads on both themes without a per-theme asset.
+function renderStackedChart(points, series) {
+  if (!points || points.length === 0) return '<div class="empty">No data</div>';
+  const labels = (series || []).map((item) => item.name);
+  if (labels.length === 0) return renderChart(points);
+
+  const width = 800;
+  const height = 170;
+  const pad = 8;
+  const totals = points.map((point) => labels.reduce((sum, label) => sum + (point.breakdown?.[label] || 0), 0));
+  const max = Math.max(1, ...totals, ...points.map((point) => point.count));
+  const step = points.length > 1 ? (width - pad * 2) / (points.length - 1) : 0;
+  const barWidth = Math.max(1.5, step * 0.62);
+
+  const bars = points.map((point, index) => {
+    const x = pad + index * step - barWidth / 2;
+    let y = height - pad;
+
+    const segments = labels.map((label, band) => {
+      const value = point.breakdown?.[label] || 0;
+      if (value <= 0) return '';
+      const h = (value / max) * (height - pad * 2);
+      y -= h;
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${h.toFixed(2)}" fill="${colorFor(band)}" rx="1"/>`;
+    }).join('');
+
+    return segments;
+  }).join('');
+
+  const line = points.map((point, index) => {
+    const x = pad + index * step;
+    const y = height - pad - (point.count / max) * (height - pad * 2);
+    return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const grid = [0.25, 0.5, 0.75].map((ratio) => {
+    const y = (height - pad) - ratio * (height - pad * 2);
+    return `<line x1="${pad}" y1="${y.toFixed(1)}" x2="${width - pad}" y2="${y.toFixed(1)}" stroke="currentColor" stroke-opacity="0.08" stroke-dasharray="3 4"/>`;
+  }).join('');
+
+  return `
+    <div class="chart-frame" data-chart>
+      <svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Alerts over time by scenario" tabindex="0">
+        ${grid}
+        <g class="chart-bars">${bars}</g>
+        <path d="${line}" fill="none" stroke="var(--text-soft)" stroke-opacity="0.45" stroke-width="1.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+        <g class="chart-hover" data-visible="false">
+          <line class="chart-crosshair" x1="-10" y1="-10" x2="-10" y2="-10" vector-effect="non-scaling-stroke"/>
+        </g>
+      </svg>
+      <output class="chart-tip" hidden></output>
+    </div>
+    <ul class="chart-legend-series">${labels.map((label, index) => `<li><span class="swatch" style="background:${colorFor(index)}"></span>${esc(label)}</li>`).join('')}</ul>
+    <script type="application/json" class="chart-data">${JSON.stringify(points.map((point, index) => ({
+      x: pad + index * step, y: height - pad - (point.count / max) * (height - pad * 2),
+      count: point.count, time: point.time, breakdown: point.breakdown || {},
+    }))).replace(/</g, '\\u003c')}</script>`;
+}
+
+// Donut: proportions at a glance, with the label list as the accessible twin.
+function renderDonut(items, { total = null, unit = 'alerts' } = {}) {
+  if (!items || items.length === 0) return '<div class="empty">No data</div>';
+
+  const sum = total ?? items.reduce((acc, item) => acc + item.count, 0);
+  if (sum <= 0) return '<div class="empty">No data</div>';
+
+  const radius = 52;
+  const stroke = 18;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+
+  const arcs = items.map((item, index) => {
+    const share = item.count / sum;
+    const length = share * circumference;
+    const dash = `${Math.max(0, length - 1.5).toFixed(2)} ${(circumference - length + 1.5).toFixed(2)}`;
+    const arc = `<circle class="donut-arc" cx="70" cy="70" r="${radius}" fill="none"
+      stroke="${colorFor(index)}" stroke-width="${stroke}" stroke-dasharray="${dash}"
+      stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"><title>${esc(item.name)}: ${fmtNum(item.count)}</title></circle>`;
+    offset += length;
+    return arc;
+  }).join('');
+
+  return `
+    <div class="donut">
+      <svg viewBox="0 0 140 140" role="img" aria-label="${fmtNum(sum)} ${esc(unit)} by category">
+        <circle cx="70" cy="70" r="${radius}" fill="none" stroke="var(--bg-deep)" stroke-width="${stroke}"/>
+        ${arcs}
+        <text class="donut-total" x="70" y="68" text-anchor="middle">${fmtNum(sum)}</text>
+        <text class="donut-unit" x="70" y="84" text-anchor="middle">${esc(unit)}</text>
+      </svg>
+      <ul class="donut-legend">
+        ${items.map((item, index) => `<li>
+          <span class="swatch" style="background:${colorFor(index)}"></span>
+          <span class="donut-name" title="${esc(item.name)}">${esc(item.name)}</span>
+          <span class="donut-share">${((item.count / sum) * 100).toFixed(0)}%</span>
+          <span class="count">${fmtNum(item.count)}</span>
+        </li>`).join('')}
+      </ul>
+    </div>`;
+}
+
+// Expiry horizon: how much of the active decision set lapses in the next
+// hours, so a silent bouncer is visible before every ban has run out.
+const expiryBuckets = [
+  { id: 'soon', label: '< 1h', test: (minutes) => minutes < 60 },
+  { id: 'today', label: '1–6h', test: (minutes) => minutes >= 60 && minutes < 360 },
+  { id: 'day', label: '6–24h', test: (minutes) => minutes >= 360 && minutes < 1440 },
+  { id: 'week', label: '1–7d', test: (minutes) => minutes >= 1440 && minutes < 10080 },
+  { id: 'later', label: '> 7d', test: (minutes) => minutes >= 10080 },
+];
+
+function expiryMinutes(until, now = Date.now()) {
+  const timestamp = sortDate(until);
+  if (!Number.isFinite(timestamp) || timestamp === Number.MAX_SAFE_INTEGER) return null;
+  return (timestamp - now) / 60000;
+}
+
+function summarizeExpiry(decisions, now = Date.now()) {
+  const buckets = expiryBuckets.map((bucket) => ({ ...bucket, count: 0 }));
+  let permanent = 0;
+
+  for (const decision of decisions || []) {
+    const minutes = expiryMinutes(decision.until, now);
+    if (minutes === null) { permanent += 1; continue; }
+    if (minutes <= 0) continue;
+    const bucket = buckets.find((candidate) => candidate.test(minutes));
+    if (bucket) bucket.count += 1;
+  }
+
+  return { buckets, permanent };
+}
+
+// An empty bucket draws no bar at all: a 3% stub reads as "a few" and would
+// make an empty hour look like data.
+function barHeight(count, total) {
+  if (!count || !total) return 0;
+  return Math.max(3, (count / total) * 100);
+}
+
+function renderExpiryHorizon(decisions, now = Date.now()) {
+  const { buckets, permanent } = summarizeExpiry(decisions, now);
+  const total = buckets.reduce((sum, bucket) => sum + bucket.count, 0) + permanent;
+
+  if (total === 0) return '<div class="empty">No active decisions</div>';
+
+  return `
+    <div class="horizon">
+      ${buckets.map((bucket) => `<div class="horizon-bar" title="${fmtNum(bucket.count)} decision(s) expire in ${esc(bucket.label)}">
+        <div class="horizon-fill" style="height:${barHeight(bucket.count, total)}%"></div>
+        <span class="horizon-count">${fmtNum(bucket.count)}</span>
+        <span class="horizon-label">${esc(bucket.label)}</span>
+      </div>`).join('')}
+      <div class="horizon-bar permanent" title="${fmtNum(permanent)} decision(s) never expire">
+        <div class="horizon-fill" style="height:${barHeight(permanent, total)}%"></div>
+        <span class="horizon-count">${fmtNum(permanent)}</span>
+        <span class="horizon-label">∞</span>
+      </div>
+    </div>`;
 }
 
 function renderBarList(items, drilldown = null) {
@@ -972,9 +1360,14 @@ async function renderAlerts() {
           <div class="field"><label for="f-origin">Decision origin</label><input id="f-origin" type="text" placeholder="cscli, crowdsec, CAPI…"></div>
           <div class="field"><label for="f-kind">Kind</label><select id="f-kind"><option value="">Any</option><option value="overflow">Overflow</option><option value="appsec">AppSec</option></select></div>
           <div class="field"><label for="f-include_capi">Shared alerts</label><select id="f-include_capi"><option value="false">Exclude CAPI</option><option value="true">Include CAPI</option></select></div>
+          <div class="field"><label for="f-value">Decision value</label><input id="f-value" type="text" placeholder="1.2.3.4 or 1.2.3.0/24"></div>
+          <div class="field"><label for="f-contains">Value matching</label><select id="f-contains"><option value="">Exact</option><option value="true">Also inside the range</option></select></div>
+          <div class="field"><label for="f-decision_type">Decision type</label><select id="f-decision_type"><option value="">Any</option><option value="ban">ban</option><option value="captcha">captcha</option></select></div>
+          <div class="field"><label for="f-has_active_decision">Active decision</label><select id="f-has_active_decision"><option value="">Any</option><option value="true">Still enforced</option><option value="false">Expired or none</option></select></div>
           <div class="field"><button class="btn" type="submit">Apply</button></div>
         </form>
       ${filterPanelClose()}
+    ${filterChips('alerts')}
     <div class="panel"><div id="alerts-body">${spinner()}</div></div>`;
 
   let loadID = 0;
@@ -987,10 +1380,16 @@ async function renderAlerts() {
     if (scenario) params.set('scenario', scenario);
     if (ip) params.set('ip', ip);
     params.set('limit', $('#f-limit').value);
-    ['since', 'origin', 'kind', 'include_capi'].forEach((key) => {
+    ['since', 'origin', 'kind', 'include_capi', 'decision_type', 'has_active_decision'].forEach((key) => {
       const value = $(`#f-${key}`)?.value;
       if (value) params.set(key, value);
     });
+    const decisionValue = $('#f-value').value.trim();
+    if (decisionValue) {
+      params.set('value', decisionValue);
+      const contains = $('#f-contains').value;
+      if (contains) params.set('contains', contains);
+    }
     rememberFilters('alerts', params);
     updateFilterBadge('alerts');
 
@@ -1120,6 +1519,7 @@ async function renderDecisions() {
           <div class="field"><button class="btn" type="submit">Apply</button></div>
         </form>
       ${filterPanelClose()}
+    ${filterChips('decisions')}
     <div class="panel"><div id="decisions-body">${spinner()}</div></div>`;
 
   // One CAPI alert carries thousands of decisions, so rendering everything at
@@ -1443,6 +1843,7 @@ async function renderBlocklist() {
       <div class="field"><label for="bl-scenario">Scenario</label><input id="bl-scenario" type="text"></div>
       <div class="field"><label for="bl-limit">Limit</label><select id="bl-limit"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></div>
       <div class="field"><button class="btn" type="submit">Apply</button></div></form>${filterPanelClose()}
+    ${filterChips('blocklist')}
     <div class="cards" id="blocklist-stats"></div>
     <div class="panel">
       <div class="panel-head"><h3>Entries</h3><span class="hint" id="blocklist-count"></span></div>

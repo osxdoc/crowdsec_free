@@ -63,12 +63,15 @@ credentials — nothing to register.
 Pages:
 
 - **Dashboard** — the three numbers that matter (alerts, unique sources, active
-  decisions) with a comparison against the previous period, the alert timeline,
-  the origin map, top scenarios and decision origins, and recent alerts. Machine,
-  bouncer, health, metrics and parser detail sits behind "More detail", so the
-  first screen stays readable; scenario and origin links open the filtered lists.
-- **Alerts** — filter by scenario, IP, period, origin and kind; optionally include
-  shared alerts. Inspect events and decisions, or delete an alert.
+  decisions) with a comparison against the previous period, the alert timeline
+  stacked by scenario, the origin map, scenario and origin donuts, the expiry
+  horizon of active bans, and recent alerts. Machine, bouncer, health, metrics
+  and parser detail sits behind "More detail", so the first screen stays
+  readable; scenario and origin links open the filtered lists.
+- **Alerts** — filter by scenario, IP, period, origin, kind, decision value
+  (exact or contained in a range), decision type and whether a decision is still
+  enforced; optionally include shared alerts. Set filters show as removable
+  chips above the list. Inspect events and decisions, or delete an alert.
 - **Decisions** — everything the LAPI considers active, including entries pulled
   from the shared blocklist (`Origin: CAPI`). Manual bans and unbans, expiry
   timestamps, simulation badges and links to the triggering alerts.
@@ -109,11 +112,18 @@ running; the configuration editor is never refreshed automatically.
 The UI follows the system light/dark preference and remembers an explicit choice
 from the sidebar toggle; the choice is stored per browser.
 
+Search is one keystroke away: **⌘K** (Ctrl+K) or the Search entry in the sidebar
+opens a command palette that matches page names, hints and keywords, ranks a name
+match above an incidental keyword, and runs the selected action — including
+"Add decision" and "Toggle theme" — without a detour.
+
 The sidebar collapses to a 68px icon rail with the button next to the logo. While
 the rail is hovered or focused it flies out over the content as an overlay, so the
 page does not reflow; Escape closes it. The collapsed/expanded choice is stored per
-browser. The alert timeline has a pointer readout — crosshair, dot and the count
-for that bucket — that snaps to real samples and also works with arrow keys.
+browser. The alert timeline has a pointer readout — crosshair, dot, the bucket count and
+the per-scenario bands — that snaps to real samples and also works with arrow
+keys. Charts never encode meaning by colour alone: every series is named in the
+legend, and the donut repeats its values in a list.
 
 Allowlist writes and hub changes require `cscli` in the web UI service's `PATH`,
 with access to the local engine configuration and database. Full configuration

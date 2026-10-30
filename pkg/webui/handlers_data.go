@@ -245,6 +245,7 @@ func (s *Server) buildOverview(ctx context.Context, since time.Duration) (*overv
 		result.DecisionSource = "api"
 		result.AlertsLimited = len(*alerts) >= limit
 		result.Alerts = alertStatsFromAPI(*alerts, since)
+		result.Alerts.TimelineScenario = timelineScenarios(result.Alerts.Timeline)
 		result.Decisions = summarizeDecisions(flattenDecisions(*alerts))
 		for i, alert := range *alerts {
 			if i < 10 {
@@ -359,6 +360,7 @@ func alertStatsFromAPI(alerts []*models.Alert, since time.Duration) alertDBStats
 	scenarios := map[string]int{}
 	sources := map[string]int{}
 	countries := map[string]int{}
+	kinds := map[string]int{}
 	geo := map[[2]float64]*geoPoint{}
 
 	for _, alert := range alerts {
@@ -371,6 +373,10 @@ func alertStatsFromAPI(alerts []*models.Alert, since time.Duration) alertDBStats
 
 		if summary.Country != "" {
 			countries[summary.Country]++
+		}
+
+		if summary.Kind != "" {
+			kinds[summary.Kind]++
 		}
 
 		source := summary.SourceIP
@@ -398,6 +404,7 @@ func alertStatsFromAPI(alerts []*models.Alert, since time.Duration) alertDBStats
 	stats.UniqueSources = len(sources)
 	stats.ByScenario = topCounts(scenarios, 10)
 	stats.ByCountry = topCounts(countries, 10)
+	stats.ByKind = topCounts(kinds, 10)
 
 	for _, point := range geo {
 		stats.Geo = append(stats.Geo, *point)

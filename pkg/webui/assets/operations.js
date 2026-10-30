@@ -1,9 +1,28 @@
 /* Console actions shared by the dashboard and list views. */
 const filterFields = {
-  alerts: ['scenario', 'ip', 'limit', 'since', 'origin', 'include_capi', 'kind'],
+  alerts: ['scenario', 'ip', 'value', 'contains', 'decision_type', 'has_active_decision', 'limit', 'since', 'origin', 'include_capi', 'kind'],
   decisions: ['ip', 'range', 'value', 'type', 'origin', 'scope', 'scenario', 'limit'],
   blocklist: ['value', 'scenario', 'limit'],
 };
+
+// A filter that is set has to be visible and removable without opening the
+// panel: otherwise a short list is a dead end.
+function activeFilterChips(kind) {
+  const noise = filterNoise[kind] || [];
+  const params = state.filters[kind] || {};
+
+  return Object.entries(params)
+    .filter(([key, value]) => value !== '' && value != null && !noise.includes(key))
+    .map(([key, value]) => ({ key, value: String(value) }));
+}
+
+function removeFilter(kind, key) {
+  const params = new URLSearchParams(state.filters[kind] || {});
+  params.delete(key);
+  if (kind === 'alerts' && key === 'value') params.delete('contains');
+  rememberFilters(kind, params);
+  if (state.route === kind) route();
+}
 let refreshTimer = null;
 let refreshInterval = 0;
 let freshnessTimer = null;

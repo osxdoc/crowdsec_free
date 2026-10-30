@@ -28,6 +28,9 @@ type namedCount struct {
 type timelinePoint struct {
 	Time  time.Time `json:"time"`
 	Count int       `json:"count"`
+	// Breakdown splits Count by scenario for the stacked chart; empty when the
+	// data source cannot group per bucket.
+	Breakdown map[string]int `json:"breakdown,omitempty"`
 }
 
 type alertSummary struct {
@@ -168,7 +171,14 @@ func buildTimeline(alerts []*models.Alert, since time.Duration) []timelinePoint 
 	}
 
 	// time.Time keys compare the location pointer too, so bucket by Unix time.
+	type bucketKey struct {
+		bucket   int64
+		scenario string
+	}
+
 	buckets := map[int64]int{}
+	byScenario := map[bucketKey]int{}
+	totals := map[string]int{}
 
 	for _, alert := range alerts {
 		created, err := time.Parse(time.RFC3339, alert.CreatedAt)
@@ -181,16 +191,76 @@ func buildTimeline(alerts []*models.Alert, since time.Duration) []timelinePoint 
 			continue
 		}
 
+		scenario := ""
+		if alert.Scenario != nil {
+			scenario = *alert.Scenario
+		}
+
+		if scenario == "" {
+			scenario = "unknown"
+		}
+
 		buckets[bucket.Unix()]++
+		byScenario[bucketKey{bucket.Unix(), scenario}]++
+		totals[scenario]++
+	}
+
+	// Same band selection as the database path, so both data sources render the
+	// same chart: the busiest scenarios, the rest folded into "other".
+	ranked := make([]namedCount, 0, len(totals))
+
+	for name, count := range totals {
+		ranked = append(ranked, namedCount{Name: name, Count: count})
+	}
+
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Count == ranked[j].Count {
+			return ranked[i].Name < ranked[j].Name
+		}
+
+		return ranked[i].Count > ranked[j].Count
+	})
+
+	const bandLimit = 5
+
+	if len(ranked) > bandLimit {
+		ranked = ranked[:bandLimit]
 	}
 
 	points := make([]timelinePoint, 0)
 
 	for t := start; !t.After(now); t = t.Add(step) {
-		points = append(points, timelinePoint{Time: t, Count: buckets[t.Unix()]})
+		point := timelinePoint{Time: t}
+
+		for _, band := range ranked {
+			if count := byScenario[bucketKey{t.Unix(), band.Name}]; count > 0 {
+				if point.Breakdown == nil {
+					point.Breakdown = map[string]int{}
+				}
+
+				point.Breakdown[band.Name] = count
+			}
+		}
+
+		point.Count = buckets[t.Unix()]
+
+		points = append(points, point)
 	}
 
 	return points
+}
+
+// timelineScenarios mirrors the band list the database path reports.
+func timelineScenarios(points []timelinePoint) []namedCount {
+	totals := map[string]int{}
+
+	for _, point := range points {
+		for name, count := range point.Breakdown {
+			totals[name] += count
+		}
+	}
+
+	return topCounts(totals, len(totals))
 }
 
 func summarizeDecisions(decisions []decisionView) decisionStats {
@@ -252,6 +322,7 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		IPEquals:         strings.TrimSpace(q.Get("ip")),
 		ValueEquals:      strings.TrimSpace(q.Get("value")),
 		OriginEquals:     strings.TrimSpace(q.Get("origin")),
+		TypeEquals:       strings.TrimSpace(q.Get("decision_type")),
 		Kind:             strings.TrimSpace(q.Get("kind")),
 		Limit:            &limit,
 		IncludeCAPI:      new(q.Get("include_capi") == "true"),
@@ -260,6 +331,18 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 
 	if since > 0 {
 		opts.Since = cstime.DurationWithDays(since)
+	}
+
+	// Substring matching only makes sense together with a value to look for.
+	if opts.ValueEquals != "" && q.Get("contains") == "true" {
+		opts.Contains = new(true)
+	}
+
+	switch q.Get("has_active_decision") {
+	case "true":
+		opts.ActiveDecisionEquals = new(true)
+	case "false":
+		opts.ActiveDecisionEquals = new(false)
 	}
 
 	alerts, _, err := s.lapi.Alerts.List(ctx, opts)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -63,6 +64,9 @@ type alertDBStats struct {
 	ByKind        []namedCount    `json:"by_kind"`
 	Geo           []geoPoint      `json:"geo"`
 	Timeline      []timelinePoint `json:"timeline"`
+	// TimelineScenario lists the scenarios the stacked timeline breaks down by,
+	// most frequent first; empty when the breakdown was not computed.
+	TimelineScenario []namedCount `json:"timeline_scenarios,omitempty"`
 }
 
 type decisionDBStats struct {
@@ -350,6 +354,14 @@ func (s *StateStore) AlertStats(ctx context.Context, since time.Time) (*alertDBS
 
 	stats.Timeline = timeline
 
+	stacked, scenarios, err := s.alertTimelineByScenario(ctx, since, timeline)
+	if err != nil {
+		return nil, err
+	}
+
+	stats.Timeline = stacked
+	stats.TimelineScenario = scenarios
+
 	geo, err := s.alertGeo(ctx, since)
 	if err != nil {
 		return nil, err
@@ -443,6 +455,131 @@ func (s *StateStore) alertTimeline(ctx context.Context, since time.Time) ([]time
 	}
 
 	return points, nil
+}
+
+// alertTimelineByScenario fills each timeline bucket with a per-scenario
+// breakdown. Only the busiest scenarios get their own band; the rest fold into
+// "other", and the bucket total stays authoritative even when a scenario is
+// truncated - the sum of the bands never exceeds count.
+func (s *StateStore) alertTimelineByScenario(ctx context.Context, since time.Time, timeline []timelinePoint) ([]timelinePoint, []namedCount, error) {
+	if len(timeline) == 0 {
+		return timeline, nil, nil
+	}
+
+	duration := time.Since(since)
+	step := time.Hour
+
+	if duration > 72*time.Hour {
+		step = 24 * time.Hour
+	}
+
+	stepSeconds := int64(step.Seconds())
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT (CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) / ?) * ? AS bucket,
+		       COALESCE(NULLIF(scenario, ''), 'unknown') AS scenario,
+		       COUNT(*)
+		FROM alerts
+		WHERE CAST(strftime('%s', substr(created_at,1,19)) AS INTEGER) >= ?
+		GROUP BY bucket, scenario
+		ORDER BY bucket`, stepSeconds, stepSeconds, since.Unix())
+	if err != nil {
+		return nil, nil, fmt.Errorf("alert timeline by scenario: %w", err)
+	}
+	defer rows.Close()
+
+	type bucketKey struct {
+		bucket   int64
+		scenario string
+	}
+
+	counts := map[bucketKey]int{}
+	totals := map[string]int{}
+
+	for rows.Next() {
+		var (
+			bucket   sql.NullInt64
+			scenario sql.NullString
+			count    int
+		)
+
+		if err := rows.Scan(&bucket, &scenario, &count); err != nil {
+			return nil, nil, fmt.Errorf("scanning timeline by scenario: %w", err)
+		}
+
+		if !bucket.Valid {
+			continue
+		}
+
+		counts[bucketKey{bucket.Int64, scenario.String}] += count
+		totals[scenario.String] += count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	ranked := make([]namedCount, 0, len(totals))
+
+	for name, count := range totals {
+		ranked = append(ranked, namedCount{Name: name, Count: count})
+	}
+
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Count == ranked[j].Count {
+			return ranked[i].Name < ranked[j].Name
+		}
+
+		return ranked[i].Count > ranked[j].Count
+	})
+
+	const bandLimit = 5
+
+	bands := ranked
+	truncated := false
+
+	if len(bands) > bandLimit {
+		bands = bands[:bandLimit]
+		truncated = true
+	}
+
+	keep := make(map[string]bool, len(bands))
+
+	for _, band := range bands {
+		keep[band.Name] = true
+	}
+
+	result := make([]timelinePoint, len(timeline))
+
+	for i, point := range timeline {
+		point.Breakdown = map[string]int{}
+
+		var counted int
+
+		for _, band := range bands {
+			count := counts[bucketKey{point.Time.Unix(), band.Name}]
+			if count > 0 {
+				point.Breakdown[band.Name] = count
+				counted += count
+			}
+		}
+
+		// Anything outside the top bands, and any bucket/scenario pair the
+		// grouping rounded differently, lands in "other".
+		if point.Count > counted {
+			point.Breakdown["other"] = point.Count - counted
+			truncated = true
+		}
+
+		result[i] = point
+	}
+
+	labels := bands
+	if truncated {
+		labels = append(labels, namedCount{Name: "other"})
+	}
+
+	return result, labels, nil
 }
 
 // DecisionStats aggregates the currently active decisions.
