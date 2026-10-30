@@ -62,10 +62,11 @@ credentials — nothing to register.
 
 Pages:
 
-- **Dashboard** — alerts, events and unique sources, timeline, top countries,
-  scenarios, AS and sources, decision counts by origin, machines and bouncers,
-  parser/bucket panels, independent service health and data-source availability.
-  Scenario and origin links open the corresponding filtered lists.
+- **Dashboard** — the three numbers that matter (alerts, unique sources, active
+  decisions) with a comparison against the previous period, the alert timeline,
+  the origin map, top scenarios and decision origins, and recent alerts. Machine,
+  bouncer, health, metrics and parser detail sits behind "More detail", so the
+  first screen stays readable; scenario and origin links open the filtered lists.
 - **Alerts** — filter by scenario, IP, period, origin and kind; optionally include
   shared alerts. Inspect events and decisions, or delete an alert.
 - **Decisions** — everything the LAPI considers active, including entries pulled
@@ -74,8 +75,8 @@ Pages:
 - **IP lookup** — correlate alerts, active decisions (including containing CIDR
   ranges) and allowlist matches with their reason. Each source reports failures
   separately; retrieval limits are shown.
-- **Geo** — world map of the alert origins (bubbles sized by alert count),
-  countries, networks (AS) and geo-enriched alerts.
+- **Geo** — world map shaded by country (dots mark exact clusters), countries,
+  networks (AS) and geo-enriched alerts.
 - **Infrastructure** — machines and bouncers from the LAPI database (version,
   OS, scenarios, last heartbeat/pull), LAPI route usage and enabled features.
 - **Metrics** — parsed/unparsed lines, parse time, buckets, LAPI and CAPI
@@ -104,6 +105,9 @@ Decision filters are included in the URL. Views show a fetch timestamp and an
 optional 30-second, 1-minute or 5-minute refresh interval, off by default. Refresh
 pauses while the tab is hidden, a form or dialog is active, or a hub action is
 running; the configuration editor is never refreshed automatically.
+
+The UI follows the system light/dark preference and remembers an explicit choice
+from the sidebar toggle; the choice is stored per browser.
 
 Allowlist writes and hub changes require `cscli` in the web UI service's `PATH`,
 with access to the local engine configuration and database. Full configuration

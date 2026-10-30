@@ -194,8 +194,70 @@ function spinner() {
 }
 
 function errorBox(message, retry = false) {
-  return `<div class="panel"><div class="panel-body"><p role="alert" style="color:var(--danger);margin:0">${esc(message)}</p>${retry ? '<button class="btn secondary" data-retry style="margin-top:12px">Try again</button>' : ''}</div></div>`;
+  return `<div class="empty" role="alert"><p class="error-text">${esc(message)}</p>${retry ? '<button class="btn secondary" data-retry type="button">Try again</button>' : ''}</div>`;
 }
+
+function fmtNum(value) {
+  const number = Number(value || 0);
+  return number.toLocaleString();
+}
+
+function flag(country) {
+  if (!country || country.length !== 2) return '';
+  return String.fromCodePoint(...[...country.toUpperCase()].map((ch) => 0x1F1E6 + ch.charCodeAt(0) - 65));
+}
+
+function shortID(value) {
+  if (!value) return '—';
+  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+}
+
+function statusBadge(active, activeText = 'online', inactiveText = 'offline') {
+  return active
+    ? `<span class="badge ok">${esc(activeText)}</span>`
+    : `<span class="badge">${esc(inactiveText)}</span>`;
+}
+
+function statCard(label, value, hint) {
+  return `<div class="card">
+    <div class="label">${esc(label)}</div>
+    <div class="value">${esc(value)}</div>
+    <div class="hint">${esc(hint)}</div>
+  </div>`;
+}
+
+function statPill(label, value, state = '') {
+  return `<span class="stat-pill"><span class="dot ${state}"></span><span class="stat-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+}
+
+/* ---------------- theme ---------------- */
+
+const THEME_KEY = 'cswebui.theme';
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (!root) return;
+  if (theme) root.dataset.theme = theme;
+  else delete root.dataset.theme;
+  const icon = $('#theme-toggle use');
+  if (icon) icon.setAttribute('href', effectiveTheme(theme) === 'dark' ? '#i-sun' : '#i-moon');
+}
+
+function effectiveTheme(theme) {
+  if (theme) return theme;
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+let storedTheme = '';
+try { storedTheme = localStorage.getItem(THEME_KEY) || ''; } catch { /* storage may be unavailable */ }
+applyTheme(storedTheme);
+
+$('#theme-toggle')?.addEventListener('click', () => {
+  const next = effectiveTheme(storedTheme) === 'dark' ? 'light' : 'dark';
+  storedTheme = next;
+  try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
+  applyTheme(next);
+});
 
 /* ---------------- session ---------------- */
 
@@ -212,11 +274,13 @@ function showLogin() {
 function showApp() {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
-  $('#current-user').textContent = state.user || '';
-  $('#version').textContent = `cswebui ${state.session?.version || ''}`;
+  const user = state.user || '';
+  if ($('#current-user')) $('#current-user').textContent = user;
+  if ($('#user-avatar')) $('#user-avatar').textContent = user.slice(0, 2) || '—';
+  if ($('#version')) $('#version').textContent = `cswebui ${state.session?.version || ''}`.trim();
 
   if (state.session && !state.session.features?.blocklist) {
-    $('#nav-blocklist').classList.add('hidden');
+    $('#nav-blocklist')?.classList.add('hidden');
   }
 }
 
@@ -297,14 +361,22 @@ window.addEventListener('beforeunload', (event) => {
 window.addEventListener('hashchange', () => { if (state.user) route(); });
 
 function setNavOpen(open) {
-  $('.sidebar').classList.toggle('nav-open', open);
-  $('#nav-toggle').setAttribute('aria-expanded', String(open));
+  const sidebar = $('.sidebar');
+  const wasOpen = sidebar?.classList.contains('nav-open');
+  sidebar?.classList.toggle('nav-open', open);
+  $('#nav-toggle')?.setAttribute('aria-expanded', String(open));
+  $('#nav-toggle')?.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
   const scrim = $('#nav-scrim');
   if (scrim) {
     scrim.hidden = !open;
     scrim.classList.toggle('visible', open);
   }
   document.body?.classList.toggle('nav-locked', open);
+  // Move focus into the drawer so keyboard users land where the eye is.
+  if (open && !wasOpen) {
+    const current = $('#nav a.active') || $('#nav a');
+    current?.focus?.();
+  }
 }
 
 async function copyText(text) {
@@ -328,8 +400,11 @@ async function copyText(text) {
 }
 
 $('#nav-toggle').addEventListener('click', () => setNavOpen($('#nav-toggle').getAttribute('aria-expanded') !== 'true'));
-$('.sidebar').addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') { setNavOpen(false); $('#nav-toggle').focus(); }
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!$('.sidebar')?.classList.contains('nav-open')) return;
+  setNavOpen(false);
+  $('#nav-toggle').focus();
 });
 $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#view').focus(); });
 $('#nav-scrim')?.addEventListener('click', () => setNavOpen(false));
@@ -372,7 +447,10 @@ function route() {
     if (link.dataset.route === state.route) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   });
-  document.title = `${$('#nav a.active')?.textContent || 'Dashboard'} · CrowdSec`;
+  const label = $('#nav a.active')?.textContent?.trim() || 'Dashboard';
+  document.title = `${label} · CrowdSec`;
+  const mobileTitle = $('#mobile-title');
+  if (mobileTitle) mobileTitle.textContent = label;
 
   routes[state.route]().then(() => {
     if (signal.aborted) return;
@@ -384,24 +462,40 @@ function route() {
   });
 }
 
+/* ---------------- shared building blocks ---------------- */
+
+function pageHeader(title, subtitle, toolbar = '') {
+  return `<div class="page-header">
+      <div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div>
+      ${toolbar ? `<div class="toolbar">${toolbar}</div>` : ''}
+    </div>`;
+}
+
+function section(title, body, extra = '') {
+  return `<div class="panel${extra ? ` ${extra}` : ''}">
+      <div class="panel-head"><h3>${esc(title)}</h3></div>
+      <div class="panel-body">${body}</div>
+    </div>`;
+}
+
+function disclosure(title, body, hint = '') {
+  return `<details class="panel disclosure">
+      <summary><span>${esc(title)}</span>${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</summary>
+      <div class="panel-body">${body}</div>
+    </details>`;
+}
+
 /* ---------------- dashboard ---------------- */
 
 async function renderDashboard() {
   const view = $('#view');
 
   view.innerHTML = `
-    <div class="page-header">
-      <div>
-        <h2>Dashboard</h2>
-        <p>Everything your Security Engine knows right now.</p>
-      </div>
-      <div class="toolbar">
-        <span class="pill" id="lapi-pill"><span class="dot off"></span> Local API</span>
-        <select id="range" aria-label="Time range">
-          ${['1h', '6h', '24h', '7d', '30d'].map((r) => `<option value="${r}" ${r === state.range ? 'selected' : ''}>last ${r}</option>`).join('')}
-        </select>
-      </div>
-    </div>
+    ${pageHeader('Dashboard', 'Everything your Security Engine knows right now.', `
+      <span class="pill" id="lapi-pill"><span class="dot off"></span> Local API</span>
+      <select id="range" aria-label="Time range">
+        ${['1h', '6h', '24h', '7d', '30d'].map((r) => `<option value="${r}" ${r === state.range ? 'selected' : ''}>Last ${r}</option>`).join('')}
+      </select>`)}
     <div id="dashboard-body">${spinner()}</div>`;
 
   $('#range').addEventListener('change', (event) => {
@@ -438,17 +532,17 @@ async function renderDashboard() {
 
   const situation = `
     <div class="situation">
-      <div class="card primary">
+      <div class="card">
         <div class="label">Alerts · last ${esc(state.range)}</div>
         <div class="value">${alertsOk ? fmtNum(data.alerts.total) : '—'}</div>
         <div class="hint">${alertsOk ? `${fmtNum(data.alerts.events)} events ${delta(data.alerts.total, previous?.Total)}` : 'unavailable'}</div>
       </div>
-      <div class="card primary">
+      <div class="card">
         <div class="label">Unique sources</div>
         <div class="value">${alertsOk ? fmtNum(data.alerts.unique_sources) : '—'}</div>
         <div class="hint">${alertsOk ? `distinct IPs ${delta(data.alerts.unique_sources, previous?.UniqueSources)}` : 'unavailable'}</div>
       </div>
-      <div class="card primary">
+      <div class="card">
         <div class="label">Active decisions</div>
         <div class="value">${decisionsOk ? fmtNum(data.decisions.total) : '—'}</div>
         <div class="hint">${decisionsOk ? `${fmtNum(data.decisions.simulated)} simulated` : 'unavailable'}</div>
@@ -466,86 +560,76 @@ async function renderDashboard() {
   const onboarding = renderOnboarding(data);
 
   const metricsPanels = metrics
-    ? `
-      <div class="grid-2">
-        <div class="panel">
-          <div class="panel-head"><h3>Top parsers</h3><span class="hint">hits</span></div>
-          <div class="panel-body">${renderBarList(metrics.top_nodes)}</div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h3>Top buckets</h3><span class="hint">active buckets</span></div>
-          <div class="panel-body">${renderBarList(metrics.top_buckets)}</div>
-        </div>
+    ? `<div class="grid-2">
+        ${section('Top parsers', renderBarList(metrics.top_nodes))}
+        ${section('Top buckets', renderBarList(metrics.top_buckets))}
       </div>`
-    : `<div class="panel" style="margin-bottom:14px"><div class="panel-body">
+    : `<div class="panel"><div class="panel-body">
          <span class="hint">Prometheus metrics are not reachable. Enable <code>prometheus</code> in <code>config.yaml</code> and set <code>data.metrics_url</code> in the cswebui config.</span>
        </div></div>`;
 
   $('#dashboard-body').innerHTML = `
     ${onboarding}
-    ${renderHealth(data)}
     ${situation}
     ${strip}
 
-    <div class="panel" style="margin-bottom:18px">
+    <div class="panel">
       <div class="panel-head"><h3>Alerts over time</h3><span class="hint">${esc(state.range)}</span></div>
       <div class="panel-body">
         ${alertsOk ? renderChart(data.alerts.timeline) : '<div class="empty">Alert data unavailable</div>'}
-        <div class="chart-legend"><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[0].time) : ''}</span><span>${data.alerts.timeline.length ? fmtDate(data.alerts.timeline[data.alerts.timeline.length - 1].time) : ''}</span></div>
+        <div class="chart-legend"><span>${data.alerts.timeline.length ? chartTime(data.alerts.timeline[0].time) : ''}</span><span>peak ${fmtNum(Math.max(0, ...data.alerts.timeline.map((point) => point.count)))}</span><span>${data.alerts.timeline.length ? chartTime(data.alerts.timeline[data.alerts.timeline.length - 1].time) : ''}</span></div>
       </div>
     </div>
 
-    <div class="panel map-panel" style="margin-bottom:18px">
-      <div class="panel-head"><h3>Where the attacks come from</h3><span class="hint">GeoIP, last ${esc(state.range)}</span></div>
+    <div class="panel map-panel">
+      <div class="panel-head"><h3>Where attacks come from</h3><span class="hint">GeoIP, last ${esc(state.range)}</span></div>
       <div class="panel-body map-split">
         <div class="map-canvas">${alertsOk ? renderWorldMap(data.alerts.geo, data.alerts.by_country) : '<div class="empty">Alert data unavailable</div>'}</div>
         <div class="map-side">${alertsOk ? renderCountryList(data.alerts.by_country) : ''}</div>
       </div>
     </div>
 
-    <div class="grid-3">
-      <div class="panel">
-        <div class="panel-head"><h3>Top scenarios</h3></div>
-        <div class="panel-body">${renderBarList(data.alerts.by_scenario, ['alerts', 'scenario'])}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Decisions by origin</h3></div>
-        <div class="panel-body">${renderBarList(data.decisions.by_origin, ['decisions', 'origin'])}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Top AS</h3></div>
-        <div class="panel-body">${renderBarList(data.alerts.by_as)}</div>
-      </div>
-    </div>
-
     <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head"><h3>Machines</h3><a href="#/infrastructure">details</a></div>
-        ${data.data_sources.machines === false ? '<div class="empty">Machine data unavailable</div>' : renderMachinesTable(data.machines.items.slice(0, 6))}
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Bouncers</h3><a href="#/infrastructure">details</a></div>
-        ${data.data_sources.bouncers === false ? '<div class="empty">Bouncer data unavailable</div>' : renderBouncersTable(data.bouncers.items.slice(0, 6))}
-      </div>
+      ${section('Top scenarios', renderBarList(data.alerts.by_scenario, ['alerts', 'scenario']))}
+      ${section('Decisions by origin', renderBarList(data.decisions.by_origin, ['decisions', 'origin']))}
     </div>
-
-    ${metricsPanels}
 
     <div class="panel">
-      <div class="panel-head"><h3>Recent alerts</h3><a href="#/alerts">show all</a></div>
+      <div class="panel-head"><h3>Recent alerts</h3><a href="#/alerts">Show all</a></div>
       <div class="table-wrap">${data.data_sources.recent_alerts === false ? '<div class="empty">Recent alerts unavailable</div>' : renderAlertsTable(data.recent_alerts, true)}</div>
     </div>
 
-    ${!db ? '<p class="hint" style="margin-top:12px">LAPI database not readable: machine/bouncer and geo aggregates are limited. Set <code>data.db_path</code>.</p>' : ''}`;
+    ${disclosure('More detail', `
+      ${renderHealth(data)}
+      <div class="grid-2">
+        ${section('Top AS', renderBarList(data.alerts.by_as))}
+        ${section('Metrics', metrics ? `<dl class="kv">
+            <dt>Parser hits</dt><dd>${metricNumber(metrics, 'parser_hits', 'cs_parser_hits_total')}</dd>
+            <dt>Unparsed</dt><dd>${metricNumber(metrics, 'parser_ko', 'cs_parser_hits_ko_total')}${ko ? ` · ${ko}` : ''}</dd>
+            <dt>Active buckets</dt><dd>${metricNumber(metrics, 'buckets_current', 'cs_buckets')}</dd>
+            <dt>LAPI requests</dt><dd>${metricNumber(metrics, 'lapi_requests', 'cs_lapi_route_requests_total')}</dd>
+          </dl>` : '<span class="hint">Metrics unavailable</span>')}
+      </div>
+      <div class="grid-2">
+        <div class="panel m0">
+          <div class="panel-head"><h3>Machines</h3><a href="#/infrastructure">Details</a></div>
+          ${data.data_sources.machines === false ? '<div class="empty">Machine data unavailable</div>' : renderMachinesTable(data.machines.items.slice(0, 6))}
+        </div>
+        <div class="panel m0">
+          <div class="panel-head"><h3>Bouncers</h3><a href="#/infrastructure">Details</a></div>
+          ${data.data_sources.bouncers === false ? '<div class="empty">Bouncer data unavailable</div>' : renderBouncersTable(data.bouncers.items.slice(0, 6))}
+        </div>
+      </div>
+      ${metricsPanels}
+    `, metrics ? '' : 'metrics offline')}
+
+    ${!db ? '<p class="hint mt-16">LAPI database not readable: machine/bouncer and geo aggregates are limited. Set <code>data.db_path</code>.</p>' : ''}`;
 
   $('#onboarding-dismiss')?.addEventListener('click', () => {
-    localStorage.setItem('cswebui.onboarding.dismissed', '1');
+    try { localStorage.setItem('cswebui.onboarding.dismissed', '1'); } catch { /* ignore */ }
     $('#onboarding')?.remove();
   });
-
-
 }
-
 
 // Filters stay collapsed until something is set: they were the largest block on
 // every list page, and most visits never touch them.
@@ -571,18 +655,15 @@ function updateFilterBadge(kind) {
   const box = $(`[data-filters="${kind}"]`);
   if (!box) return;
   const count = activeFilterCount(kind);
-  const badge = $('.filter-count', box);
-  if (badge) badge.textContent = count ? `${count} active` : '';
+  const badgeEl = $('.filter-count', box);
+  if (badgeEl) badgeEl.textContent = count ? `${count} active` : '';
   box.toggleAttribute('open', count > 0);
-}
-
-function statPill(label, value, state = '') {
-  return `<span class="stat-pill"><span class="dot ${state}"></span><span class="stat-label">${esc(label)}</span><strong>${esc(value)}</strong></span>`;
 }
 
 // The checklist disappears once every step is done, or when dismissed.
 function renderOnboarding(data) {
-  const dismissed = localStorage.getItem('cswebui.onboarding.dismissed') === '1';
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('cswebui.onboarding.dismissed') === '1'; } catch { /* ignore */ }
   const steps = [
     { done: data.lapi_reachable, text: 'Engine reachable', hint: 'Local API answers' },
     { done: (data.machines?.total || 0) > 0, text: 'Engine registered', hint: 'cscli machines add' },
@@ -599,24 +680,6 @@ function renderOnboarding(data) {
   </div>`;
 }
 
-function statCard(label, value, hint) {
-  return `<div class="card">
-    <div class="label">${esc(label)}</div>
-    <div class="value">${esc(value)}</div>
-    <div class="hint">${esc(hint)}</div>
-  </div>`;
-}
-
-function fmtNum(value) {
-  const number = Number(value || 0);
-  return number.toLocaleString();
-}
-
-function flag(country) {
-  if (!country || country.length !== 2) return '';
-  return String.fromCodePoint(...[...country.toUpperCase()].map((ch) => 0x1F1E6 + ch.charCodeAt(0) - 65));
-}
-
 function renderCountryList(items) {
   if (!items || items.length === 0) {
     return '<div class="empty">No geo data (enable GeoIP in the engine)</div>';
@@ -628,12 +691,6 @@ function renderCountryList(items) {
       <span class="count">${fmtNum(item.count)}</span>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (item.count / items[0].count) * 100)}%"></div></div>
     </div>`).join('')}</div>`;
-}
-
-function statusBadge(active, activeText = 'online', inactiveText = 'offline') {
-  return active
-    ? `<span class="badge ok">${esc(activeText)}</span>`
-    : `<span class="badge">${esc(inactiveText)}</span>`;
 }
 
 function renderMachinesTable(machines) {
@@ -673,17 +730,18 @@ function renderBouncersTable(bouncers) {
       </tr>`).join('')}</tbody></table></div>`;
 }
 
-function shortID(value) {
-  if (!value) return '—';
-  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+function chartTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function renderChart(points) {
   if (!points || points.length === 0) return '<div class="empty">No data</div>';
 
   const width = 800;
-  const height = 150;
-  const pad = 6;
+  const height = 170;
+  const pad = 8;
   const max = Math.max(1, ...points.map((p) => p.count));
   const step = points.length > 1 ? (width - pad * 2) / (points.length - 1) : 0;
 
@@ -695,17 +753,22 @@ function renderChart(points) {
 
   const line = coords.map(([x, y], index) => `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
   const area = `${line} L${coords[coords.length - 1][0].toFixed(1)},${height - pad} L${coords[0][0].toFixed(1)},${height - pad} Z`;
+  const grid = [0.25, 0.5, 0.75].map((ratio) => {
+    const y = (height - pad) - ratio * (height - pad * 2);
+    return `<line x1="${pad}" y1="${y.toFixed(1)}" x2="${width - pad}" y2="${y.toFixed(1)}" stroke="currentColor" stroke-opacity="0.08" stroke-dasharray="3 4"/>`;
+  }).join('');
 
   return `
     <svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Alerts over time">
       <defs>
         <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"/>
-          <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02"/>
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.01"/>
         </linearGradient>
       </defs>
+      ${grid}
       <path d="${area}" fill="url(#chart-fill)"/>
-      <path d="${line}" fill="none" stroke="#38bdf8" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
     </svg>`;
 }
 
@@ -717,7 +780,7 @@ function renderBarList(items, drilldown = null) {
   return `<div class="bar-list">${items.map((item) => `
     <div class="bar-row">
       ${drilldown ? `<a class="name" href="${esc(filteredLink(drilldown[0], drilldown[1], item.name))}">${esc(item.name)}</a>` : `<span class="name" title="${esc(item.name)}">${esc(item.name)}</span>`}
-      <span class="count">${item.count}</span>
+      <span class="count">${fmtNum(item.count)}</span>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (item.count / max) * 100)}%"></div></div>
     </div>`).join('')}</div>`;
 }
@@ -729,19 +792,19 @@ function renderAlertsTable(alerts, compact = false) {
 
   const rows = alerts.map((alert) => `
     <tr class="clickable" data-alert-id="${alert.id}">
-      <td data-sort="${sortDate(alert.created_at)}" title="${esc(fmtDate(alert.created_at))}">${esc(relTime(alert.created_at))}</td>
-      <td class="mono">${esc(alert.scenario)}</td>
-      <td class="mono"><button class="table-link" aria-label="Open alert #${alert.id}: ${esc(alert.source_ip || alert.source_value || 'Details')}">${esc(alert.source_ip || alert.source_value || 'Details')}</button></td>
-      <td>${alert.source_country ? `<span class="flag">${flag(alert.source_country)}</span> ${esc(alert.source_country)}` : '—'}</td>
-      ${compact ? '' : `<td>${esc(alert.source_scope)}</td>`}
-      <td>${alert.decisions}</td>
-      <td>${alert.events}</td>
-      <td>${esc(alert.kind || '—')}</td>
+      <td class="nowrap" data-sort="${sortDate(alert.created_at)}" title="${esc(fmtDate(alert.created_at))}">${esc(relTime(alert.created_at))}</td>
+      <td class="mono wrap-cell">${esc(alert.scenario)}</td>
+      <td class="mono nowrap"><button class="table-link" aria-label="Open alert #${alert.id}: ${esc(alert.source_ip || alert.source_value || 'Details')}">${esc(alert.source_ip || alert.source_value || 'Details')}</button></td>
+      <td class="col-country">${alert.source_country ? `<span class="flag">${flag(alert.source_country)}</span> ${esc(alert.source_country)}` : '—'}</td>
+      ${compact ? '' : `<td class="col-scope">${esc(alert.source_scope)}</td>`}
+      <td class="col-decisions">${alert.decisions}</td>
+      <td class="col-events">${alert.events}</td>
+      <td class="col-kind">${esc(alert.kind || '—')}</td>
     </tr>`).join('');
 
-  return `<table>
+  return `<table class="list-table">
     <thead><tr>
-      <th>When</th><th>Scenario</th><th>Source</th><th>Country</th>${compact ? '' : '<th>Scope</th>'}<th>Decisions</th><th>Events</th><th>Kind</th>
+      <th>When</th><th>Scenario</th><th>Source</th><th class="col-country">Country</th>${compact ? '' : '<th class="col-scope">Scope</th>'}<th class="col-decisions">Decisions</th><th class="col-events">Events</th><th class="col-kind">Kind</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -752,9 +815,7 @@ function renderAlertsTable(alerts, compact = false) {
 async function renderAlerts() {
   const view = $('#view');
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Alerts</h2><p>Everything your scenarios detected.</p></div>
-    </div>
+    ${pageHeader('Alerts', 'Everything your scenarios detected.')}
     ${filterPanelOpen('alerts')}
         <form class="form-grid" id="alert-filters">
           <div class="field"><label for="f-scenario">Scenario</label><input id="f-scenario" type="text" placeholder="crowdsecurity/ssh-bf"></div>
@@ -766,7 +827,7 @@ async function renderAlerts() {
           <div class="field"><label for="f-origin">Decision origin</label><input id="f-origin" type="text" placeholder="cscli, crowdsec, CAPI…"></div>
           <div class="field"><label for="f-kind">Kind</label><select id="f-kind"><option value="">Any</option><option value="overflow">Overflow</option><option value="appsec">AppSec</option></select></div>
           <div class="field"><label for="f-include_capi">Shared alerts</label><select id="f-include_capi"><option value="false">Exclude CAPI</option><option value="true">Include CAPI</option></select></div>
-          <div class="field" style="display:flex;align-items:flex-end"><button class="btn" type="submit">Filter</button></div>
+          <div class="field"><button class="btn" type="submit">Apply</button></div>
         </form>
       ${filterPanelClose()}
     <div class="panel"><div id="alerts-body">${spinner()}</div></div>`;
@@ -788,11 +849,11 @@ async function renderAlerts() {
     rememberFilters('alerts', params);
     updateFilterBadge('alerts');
 
-    $('#alerts-body').innerHTML = spinner();
+    if (body) body.innerHTML = spinner();
 
     try {
       const data = await api(`/api/alerts?${params}`);
-      if (id !== loadID || !body.isConnected) return;
+      if (id !== loadID || !body?.isConnected) return;
       state.cache.alerts = data.alerts;
       body.innerHTML = resultCount(data.alerts.length, Number(params.get('limit'))) + (data.alerts.length
         ? `<div class="table-wrap">${renderAlertsTable(data.alerts)}</div>`
@@ -800,7 +861,7 @@ async function renderAlerts() {
       enhanceTables(body);
       mountRefresh(data.generated_at || new Date().toISOString());
     } catch (error) {
-      if (id === loadID && body.isConnected && error.name !== 'AbortError') body.innerHTML = errorBox(error.message, true);
+      if (id === loadID && body?.isConnected && error.name !== 'AbortError') body.innerHTML = errorBox(error.message, true);
     }
   };
 
@@ -845,15 +906,15 @@ async function showAlert(id) {
         <dt>Events</dt><dd>${esc(alert.events_count)}</dd>
         <dt>Labels</dt><dd>${esc(labels || '—')}</dd>
       </dl>
-      ${decisions ? `<h4 style="margin:18px 0 8px">Decisions</h4><div class="table-wrap"><table>
+      ${decisions ? `<h4 class="modal-section">Decisions</h4><div class="table-wrap"><table>
         <thead><tr><th>Value</th><th>Scope</th><th>Type</th><th>Duration</th><th>Origin</th></tr></thead>
         <tbody>${decisions}</tbody></table></div>` : ''}
-      <h4 style="margin:18px 0 8px">Events</h4>
+      <h4 class="modal-section">Events</h4>
       <pre class="json">${esc(JSON.stringify(alert.events || [], null, 2))}</pre>
-      <div class="form-actions" style="justify-content:flex-end">
+      <div class="form-actions end">
         ${source.ip ? `<button class="btn secondary" data-inspect-ip="${esc(source.ip)}">Inspect IP</button>` : ''}
         <button class="btn secondary" id="alert-close">Close</button>
-        <button class="btn danger" id="alert-delete">Delete alert</button>
+        <button class="btn danger" id="alert-delete"><svg class="btn-icon" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete alert</button>
       </div>`);
 
     $('#alert-close').addEventListener('click', closeModal);
@@ -894,15 +955,11 @@ async function renderDecisions() {
   ];
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Decisions</h2><p>What your remediators enforce.</p></div>
-      <div class="toolbar">
+    ${pageHeader('Decisions', 'What your remediators enforce.', `
         <div class="chips" role="group" aria-label="Decision source">
           ${sources.map(([value, label]) => `<button type="button" class="chip" data-source="${value}">${label}</button>`).join('')}
         </div>
-        <button class="btn" id="add-decision">Add decision</button>
-      </div>
-    </div>
+        <button class="btn" id="add-decision"><svg class="btn-icon" viewBox="0 0 24 24"><use href="#i-plus"/></svg>Add decision</button>`)}
     ${filterPanelOpen('decisions')}
         <form class="form-grid" id="decision-filters">
           <div class="field"><label for="d-ip">IP</label><input id="d-ip" type="text" placeholder="1.2.3.4"></div>
@@ -915,7 +972,7 @@ async function renderDecisions() {
           <div class="field"><label for="d-scenario">Scenario</label><input id="d-scenario" type="text"></div>
           <div class="field"><label for="d-scope">Scope</label><select id="d-scope"><option value="">Any</option><option>ip</option><option>range</option></select></div>
           <div class="field"><label for="d-limit">Alert retrieval limit</label><select id="d-limit"><option>100</option><option selected>500</option><option>1000</option><option>5000</option></select></div>
-          <div class="field" style="display:flex;align-items:flex-end"><button class="btn" type="submit">Filter</button></div>
+          <div class="field"><button class="btn" type="submit">Apply</button></div>
         </form>
       ${filterPanelClose()}
     <div class="panel"><div id="decisions-body">${spinner()}</div></div>`;
@@ -927,23 +984,9 @@ async function renderDecisions() {
   const page = { items: [], visible: pageSize, sortIndex: null, asc: true };
   let loadID = 0;
 
-  const keys = [
-    (d) => d.value, (d) => d.scope, (d) => d.country || '', (d) => d.as_name || '',
-    (d) => d.type, (d) => new Date(d.until || 0).getTime(), (d) => new Date(d.until || 0).getTime(),
-    (d) => d.scenario || '', (d) => d.origin || '', (d) => d.alert_id || 0,
-  ];
-
-  const sorted = () => {
-    if (page.sortIndex === null) return page.items;
-    const key = keys[page.sortIndex];
-    const direction = page.asc ? 1 : -1;
-    return [...page.items].sort((a, b) => {
-      const left = key(a);
-      const right = key(b);
-      if (typeof left === 'number' && typeof right === 'number') return (left - right) * direction;
-      return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' }) * direction;
-    });
-  };
+  const sorted = () => (page.sortIndex === null
+    ? page.items
+    : sortDecisions(page.items, page.sortIndex, page.asc));
 
   const markSourceChip = (origin) => {
     $$('.chips .chip').forEach((chip) => {
@@ -1036,30 +1079,53 @@ async function renderDecisions() {
   await load();
 }
 
+// The sort key belongs to the column, so renaming or reordering a column cannot
+// silently sort by another field.
+const decisionColumns = [
+  { label: 'Value', cls: '', key: (d) => d.value },
+  { label: 'Type', cls: '', key: (d) => d.type },
+  { label: 'Country', cls: 'col-country', key: (d) => d.country || '' },
+  { label: 'AS', cls: 'col-as', key: (d) => d.as_name || '' },
+  { label: 'Expires', cls: '', key: (d) => sortDate(d.until) },
+  { label: 'Scenario', cls: 'col-scenario', key: (d) => d.scenario || '' },
+  { label: 'Origin', cls: 'col-origin', key: (d) => d.origin || '' },
+  { label: 'Alert', cls: 'col-alert', key: (d) => d.alert_id || 0 },
+];
+
+function sortDecisions(items, index, ascending) {
+  const { key } = decisionColumns[index] || {};
+  if (!key) return items;
+  const direction = ascending ? 1 : -1;
+  return [...items].sort((a, b) => {
+    const left = key(a);
+    const right = key(b);
+    if (typeof left === 'number' && typeof right === 'number') return (left - right) * direction;
+    return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' }) * direction;
+  });
+}
+
 function renderDecisionsTable(decisions, actionable = true, view = {}) {
   if (!decisions || decisions.length === 0) return '<div class="empty">No decisions</div>';
 
-  const headers = ['Value', 'Scope', 'Country', 'AS', 'Type', 'Remaining', 'Until', 'Scenario', 'Origin', 'Alert'];
   const rows = decisions.map((decision) => `
     <tr data-decision-id="${decision.id}" data-origin="${esc(decision.origin)}">
-      <td class="mono">${decision.scope === 'ip' ? `<button class="table-link" data-inspect-ip="${esc(decision.value)}">${esc(decision.value)}</button>` : `<span data-copy="${esc(decision.value)}" title="Click to copy">${esc(decision.value)}</span>`}</td>
-      <td>${esc(decision.scope)}</td>
-      <td>${decision.country ? `<span class="flag">${flag(decision.country)}</span> ${esc(decision.country)}` : '—'}</td>
-      <td class="mono" title="${esc(decision.as_name || '')}">${esc(decision.as_name || '—')}</td>
-      <td>${typeBadge(decision.type)}${decision.simulated ? ' ' + badge('simulated', 'sim') : ''}</td>
-      <td class="mono" data-sort="${sortDate(decision.until)}">${esc(fmtDuration(decision.duration))}</td><td class="mono" data-sort="${sortDate(decision.until)}">${esc(fmtDate(decision.until))}</td>
-      <td class="mono">${esc(decision.scenario)}</td>
-      <td class="mono">${esc(decision.origin)}</td>
-      <td>${decision.alert_id ? `<button class="table-link" data-alert-id="${decision.alert_id}">Alert #${decision.alert_id}</button>` : '—'}</td>${actionable ? '<td><button class="btn danger" data-delete style="padding:4px 9px;font-size:12px">Unban</button></td>' : ''}
+      <td class="mono nowrap">${decision.scope === 'ip' ? `<button class="table-link" data-inspect-ip="${esc(decision.value)}">${esc(decision.value)}</button>` : `<span data-copy="${esc(decision.value)}" title="Click to copy">${esc(decision.value)}</span>`}${decision.scope === 'range' ? ' ' + badge('range', 'off') : ''}</td>
+      <td class="nowrap">${typeBadge(decision.type)}${decision.simulated ? ' ' + badge('simulated', 'sim') : ''}</td>
+      <td class="col-country">${decision.country ? `<span class="flag">${flag(decision.country)}</span> ${esc(decision.country)}` : '—'}</td>
+      <td class="mono nowrap col-as" title="${esc(decision.as_name || '')}">${esc(decision.as_name || '—')}</td>
+      <td class="mono" data-sort="${sortDate(decision.until)}" title="${esc(fmtDate(decision.until))}">${esc(fmtDuration(decision.duration))}</td>
+      <td class="mono wrap-cell col-scenario">${esc(decision.scenario)}</td>
+      <td class="mono col-origin">${esc(decision.origin)}</td>
+      <td class="col-alert">${decision.alert_id ? `<button class="table-link" data-alert-id="${decision.alert_id}">#${decision.alert_id}</button>` : '—'}</td>${actionable ? '<td><button class="btn danger" data-delete type="button">Unban</button></td>' : ''}
     </tr>`).join('');
 
-  const head = headers.map((label, index) => {
+  const head = decisionColumns.map(({ label, cls }, index) => {
     const active = view.sortIndex === index;
     const sort = active ? (view.asc ? 'ascending' : 'descending') : null;
-    return `<th data-col="${index}"${sort ? ` aria-sort="${sort}"` : ''}><button class="table-sort" type="button" aria-label="Sort by ${esc(label)}">${esc(label)}</button></th>`;
+    return `<th data-col="${index}"${cls ? ` class="${cls}"` : ''}${sort ? ` aria-sort="${sort}"` : ''}><button class="table-sort" type="button" aria-label="Sort by ${esc(label)}">${esc(label)}</button></th>`;
   }).join('');
 
-  return `<div class="table-wrap"><table data-no-enhance>
+  return `<div class="table-wrap"><table class="list-table" data-no-enhance>
     <thead><tr>${head}${actionable ? '<th></th>' : ''}</tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
@@ -1098,7 +1164,6 @@ async function deleteDecision(decision, onDone, button) {
   }
 }
 
-
 function showDecisionForm(target, onDone) {
   const title = target === 'local' ? 'Add decision' : 'Share decision via blocklist server';
 
@@ -1114,8 +1179,8 @@ function showDecisionForm(target, onDone) {
         </div>
         <div class="field"><label for="n-duration">Duration</label><input id="n-duration" type="text" value="4h" required></div>
       </div>
-      <div class="field" style="margin-top:12px"><label for="n-reason">Reason</label><input id="n-reason" type="text" placeholder="manual ban from cswebui"></div>
-      <div class="form-actions" style="justify-content:flex-end">
+      <div class="field mt-16"><label for="n-reason">Reason</label><input id="n-reason" type="text" placeholder="manual ban from cswebui"></div>
+      <div class="form-actions end">
         <button class="btn secondary" type="button" id="n-cancel">Cancel</button>
         <button class="btn" type="submit">Apply</button>
       </div>
@@ -1159,10 +1224,17 @@ async function renderAllowlists() {
   const view = $('#view');
 
   view.innerHTML =
-    `<div class="page-header"><div><h2>Allowlists</h2><p>Never ban these values.</p></div><div class="toolbar"><button class="btn" data-allowlist-create>Create allowlist</button></div></div>
+    `${pageHeader('Allowlists', 'Never ban these values.', '<button class="btn" data-allowlist-create><svg class="btn-icon" viewBox="0 0 24 24"><use href="#i-plus"/></svg>Create allowlist</button>')}
      <div class="panel"><div id="allowlists-body">${spinner()}</div></div>`;
 
-  const data = await api('/api/allowlists');
+  let data;
+  try {
+    data = await api('/api/allowlists');
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    $('#allowlists-body').innerHTML = errorBox(error.message, true);
+    return;
+  }
   state.cache.updatedAt = data.generated_at;
 
   if (!data.allowlists.length) {
@@ -1170,17 +1242,16 @@ async function renderAllowlists() {
     return;
   }
 
-  $('#allowlists-body').innerHTML = `<div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>Description</th><th>Items</th><th>Managed by console</th></tr></thead>
+  $('#allowlists-body').innerHTML = `<div class="table-wrap"><table class="list-table">
+      <thead><tr><th>Name</th><th class="col-desc">Description</th><th>Items</th><th class="col-managed">Managed by console</th></tr></thead>
       <tbody>${data.allowlists.map((list) => `
         <tr class="clickable" data-allowlist="${esc(list.name)}">
           <td class="mono"><button class="table-link">${esc(list.name)}</button></td>
-          <td class="wrap">${esc(list.description)}</td>
+          <td class="wrap col-desc">${esc(list.description)}</td>
           <td>${(list.items || []).length}</td>
-          <td>${list.console_managed ? 'yes' : 'no'}</td>
+          <td class="col-managed">${list.console_managed ? badge('console', 'warn') : badge('local', 'off')}</td>
         </tr>`).join('')}</tbody>
     </table></div>`;
-
 }
 
 async function showAllowlist(name) {
@@ -1204,10 +1275,10 @@ async function showAllowlist(name) {
         <dt>Created</dt><dd>${esc(fmtDate(allowlist.created_at))}</dd>
         <dt>Items</dt><dd>${(allowlist.items || []).length}</dd>
       </dl>
-      ${items ? `<div class="table-wrap"><table>
+      ${items ? `<div class="table-wrap mt-16"><table>
         <thead><tr><th>Value</th><th>Description</th><th>Expiration</th>${allowlist.console_managed ? '' : '<th></th>'}</tr></thead>
         <tbody>${items}</tbody></table></div>` : '<div class="empty">No items</div>'}
-      ${allowlist.console_managed ? '<p class="hint">Managed by the CrowdSec Console; local editing is disabled.</p>' : `<div class="form-actions"><button class="btn" data-allowlist-add="${esc(name)}">Add entry</button><button class="btn danger" data-allowlist-remove data-allowlist-name="${esc(name)}">Delete allowlist</button></div>`}`);
+      ${allowlist.console_managed ? '<p class="hint mt-16">Managed by the CrowdSec Console; local editing is disabled.</p>' : `<div class="form-actions"><button class="btn" data-allowlist-add="${esc(name)}">Add entry</button><button class="btn danger" data-allowlist-remove data-allowlist-name="${esc(name)}">Delete allowlist</button></div>`}`);
   } catch (error) {
     if (!modal.isConnected || error.name === 'AbortError') return;
     openModal(`Allowlist ${name}`, errorBox(error.message));
@@ -1221,17 +1292,14 @@ async function renderBlocklist() {
   const signal = viewController.signal;
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Shared blocklist</h2><p>Decisions exchanged through your own blocklist server.</p></div>
-      <div class="toolbar"><button class="btn" id="share-decision">Share decision</button></div>
-    </div>
+    ${pageHeader('Shared blocklist', 'Decisions exchanged through your own blocklist server.', '<button class="btn" id="share-decision">Share decision</button>')}
     ${filterPanelOpen('blocklist')}<form id="blocklist-filters" class="form-grid">
       <div class="field"><label for="bl-value">Value</label><input id="bl-value" type="text"></div>
       <div class="field"><label for="bl-scenario">Scenario</label><input id="bl-scenario" type="text"></div>
       <div class="field"><label for="bl-limit">Limit</label><select id="bl-limit"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></div>
-      <button class="btn" type="submit">Filter</button></form>${filterPanelClose()}
-    <div id="blocklist-stats" class="cards"></div>
-    <div class="panel" style="margin-bottom:14px">
+      <div class="field"><button class="btn" type="submit">Apply</button></div></form>${filterPanelClose()}
+    <div class="cards" id="blocklist-stats"></div>
+    <div class="panel">
       <div class="panel-head"><h3>Entries</h3><span class="hint" id="blocklist-count"></span></div>
       <div id="blocklist-decisions">${spinner()}</div>
     </div>
@@ -1261,9 +1329,9 @@ async function renderBlocklist() {
     $('#blocklist-stats').innerHTML = errorBox(stats.error, true);
   } else {
     $('#blocklist-stats').innerHTML = `
-      <div class="card"><div class="label">Entries</div><div class="value">${stats.active_decisions}</div></div>
-      <div class="card"><div class="label">Engines</div><div class="value">${stats.machines}</div></div>
-      <div class="card"><div class="label">Revision</div><div class="value">${stats.revision}</div></div>`;
+      <div class="card"><div class="label">Entries</div><div class="value">${fmtNum(stats.active_decisions)}</div></div>
+      <div class="card"><div class="label">Engines</div><div class="value">${fmtNum(stats.machines)}</div></div>
+      <div class="card"><div class="label">Revision</div><div class="value">${fmtNum(stats.revision)}</div></div>`;
   }
 
   const entries = (decisions.decisions || []).map((decision) => `
@@ -1274,7 +1342,7 @@ async function renderBlocklist() {
       <td class="mono">${esc(fmtDuration(decision.duration))}</td>
       <td class="mono" data-sort="${sortDate(decision.until)}">${esc(fmtDate(decision.until))}</td>
       <td>${esc(decision.source)}</td>
-      <td><button class="btn danger" data-blocklist-id="${decision.id}" style="padding:4px 9px;font-size:12px">Remove</button></td>
+      <td><button class="btn danger" data-blocklist-id="${decision.id}" type="button">Remove</button></td>
     </tr>`).join('');
 
   $('#blocklist-decisions').innerHTML = decisions.error ? errorBox(decisions.error, true) : entries
@@ -1305,7 +1373,7 @@ async function renderBlocklist() {
   const engineRows = (machines.machines || []).map((machine) => `
     <tr>
       <td class="mono">${esc(machine.machine_id)}</td>
-      <td>${esc(machine.last_ip)}</td>
+      <td class="mono">${esc(machine.last_ip)}</td>
       <td data-sort="${sortDate(machine.last_seen)}">${esc(machine.last_seen && !machine.last_seen.startsWith('0001') ? relTime(machine.last_seen) : 'never')}</td>
     </tr>`).join('');
 
@@ -1324,12 +1392,8 @@ async function renderConfig() {
   currentConfig = { name: null, content: '' };
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Configuration</h2><p>Edit the engine configuration and reload it.</p></div>
-      <div class="toolbar">
-        <button class="btn secondary" id="config-check">Check saved config</button><button class="btn secondary" id="config-reload">Reload engine</button>
-      </div>
-    </div>
+    ${pageHeader('Configuration', 'Edit the engine configuration and reload it.', `
+      <button class="btn secondary" id="config-check">Check saved config</button><button class="btn secondary" id="config-reload">Reload engine</button>`)}
     <div class="split">
       <div class="panel">
         <div class="panel-head"><h3>Files</h3></div>
@@ -1462,8 +1526,6 @@ async function saveConfigFile() {
   }
 }
 
-
-
 /* ---------------- geo map ---------------- */
 
 function projectGeo(lat, lon) {
@@ -1472,12 +1534,12 @@ function projectGeo(lat, lon) {
 
 function mapIntensity(count, max) {
   if (!count || count <= 0) {
-    return 'rgba(21, 34, 47, 0.85)';
+    return { fill: 'transparent', opacity: 0 };
   }
 
   // Any country with data is clearly visible; the busiest one is near opaque.
   const ratio = count / Math.max(1, max);
-  return `rgba(56, 189, 248, ${(0.55 + 0.4 * ratio).toFixed(3)})`;
+  return { fill: 'var(--accent)', opacity: (0.18 + 0.62 * ratio).toFixed(3) };
 }
 
 function renderWorldMap(geoPoints, byCountry) {
@@ -1499,8 +1561,10 @@ function renderWorldMap(geoPoints, byCountry) {
       const count = counts[iso] || 0;
       const name = (COUNTRY_CENTROIDS[iso] || [0, 0, iso])[2];
       const title = count > 0 ? `${name}: ${count} alert(s)` : name;
+      const { opacity } = mapIntensity(count, max);
       const className = count > 0 ? 'map-country has-data' : 'map-country';
-      return `<path class="${className}" d="${path}" fill="${mapIntensity(count, max)}"><title>${esc(title)}</title></path>`;
+      const style = count > 0 ? ` style="--intensity:${opacity}"` : '';
+      return `<path class="${className}" d="${path}"${style}><title>${esc(title)}</title></path>`;
     }).join('');
   }
 
@@ -1508,7 +1572,7 @@ function renderWorldMap(geoPoints, byCountry) {
   const dots = (geoPoints || []).map((point) => {
     const [x, y] = projectGeo(point.lat, point.lon);
     const label = point.country ? `${point.country}: ${point.count} alert(s)` : `${point.count} alert(s)`;
-    return `<circle class="map-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="1.1"><title>${esc(label)}</title></circle>`;
+    return `<circle class="map-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="1.2"><title>${esc(label)}</title></circle>`;
   }).join('');
 
   const graticule = [];
@@ -1542,14 +1606,10 @@ async function renderGeo() {
   const view = $('#view');
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Geo</h2><p>Where the detected sources are located.</p></div>
-      <div class="toolbar">
-        <select id="geo-range" aria-label="Time range">
-          ${['6h', '24h', '7d', '30d'].map((r) => `<option value="${r}" ${r === state.range ? 'selected' : ''}>last ${r}</option>`).join('')}
-        </select>
-      </div>
-    </div>
+    ${pageHeader('Geo', 'Where the detected sources are located.', `
+      <select id="geo-range" aria-label="Time range">
+        ${['6h', '24h', '7d', '30d'].map((r) => `<option value="${r}" ${r === state.range ? 'selected' : ''}>Last ${r}</option>`).join('')}
+      </select>`)}
     <div id="geo-body">${spinner()}</div>`;
 
   $('#geo-range').addEventListener('change', (event) => {
@@ -1562,6 +1622,8 @@ async function renderGeo() {
   const countries = alerts.by_country || [];
   const topCountry = countries[0] ? `${flag(countries[0].name)} ${countries[0].name}` : '—';
 
+  state.cache.updatedAt = data.generated_at;
+
   $('#geo-body').innerHTML = `
     <div class="cards">
       ${statCard(`Alerts (${state.range})`, fmtNum(alerts.total), `${fmtNum(alerts.events)} events`)}
@@ -1570,24 +1632,18 @@ async function renderGeo() {
       ${statCard('Locations', fmtNum((alerts.geo || []).length), 'map clusters')}
     </div>
 
-    <div class="panel map-panel map-large" style="margin-bottom:14px">
+    <div class="panel map-panel map-large">
       <div class="panel-head"><h3>Origin map</h3><span class="hint">GeoLite2 via the geoip-enrich parser</span></div>
       <div class="panel-body">${renderWorldMap(alerts.geo, countries)}</div>
     </div>
 
     <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head"><h3>Top countries</h3></div>
-        <div class="panel-body">${renderCountryList(countries)}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Top networks (AS)</h3></div>
-        <div class="panel-body">${renderBarList(alerts.by_as)}</div>
-      </div>
+      ${section('Top countries', renderCountryList(countries))}
+      ${section('Top networks (AS)', renderBarList(alerts.by_as))}
     </div>
 
     <div class="panel">
-      <div class="panel-head"><h3>Recent alerts with geo</h3><a href="#/alerts">all alerts</a></div>
+      <div class="panel-head"><h3>Recent alerts with geo</h3><a href="#/alerts">All alerts</a></div>
       <div class="table-wrap">${renderAlertsTable(data.recent_alerts, false)}</div>
     </div>`;
 }
@@ -1598,9 +1654,7 @@ async function renderInfrastructure() {
   const view = $('#view');
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Infrastructure</h2><p>Engines, bouncers and how they talk to the API.</p></div>
-    </div>
+    ${pageHeader('Infrastructure', 'Engines, bouncers and how they talk to the API.')}
     <div id="infra-body">${spinner()}</div>`;
 
   const infra = await api('/api/infra');
@@ -1624,13 +1678,13 @@ async function renderInfrastructure() {
 
   const machineRows = infra.machines.map((machine) => `
     <tr>
-      <td class="mono" style="max-width:340px;overflow:hidden;text-overflow:ellipsis" title="${esc(machine.machine_id)}">${esc(machine.machine_id)}</td>
+      <td class="mono ellipsis" title="${esc(machine.machine_id)}">${esc(machine.machine_id)}</td>
       <td class="mono">${esc(machine.version || '—')}</td>
       <td>${esc([machine.osname, machine.osversion].filter(Boolean).join(' ') || '—')}</td>
       <td title="${esc(machine.scenarios || '')}">${(machine.scenarios || '').split(',').filter(Boolean).length}</td>
       <td data-sort="${sortDate(machine.last_heartbeat)}">${machine.last_heartbeat ? relTime(machine.last_heartbeat) : 'never'}</td>
       <td class="mono">${esc(machine.ip_address || '—')}</td>
-      <td>${machine.validated ? '<span class="badge ok">valid</span>' : '<span class="badge">pending</span>'}</td>
+      <td>${machine.validated ? badge('valid', 'ok') : badge('pending', 'warn')}</td>
     </tr>`).join('');
 
   const bouncerRows = infra.bouncers.map((bouncer) => `
@@ -1641,7 +1695,7 @@ async function renderInfrastructure() {
       <td>${esc([bouncer.osname, bouncer.osversion].filter(Boolean).join(' ') || '—')}</td>
       <td class="mono">${esc(bouncer.ip_address || '—')}</td>
       <td data-sort="${sortDate(bouncer.last_pull)}">${bouncer.last_pull ? relTime(bouncer.last_pull) : 'never'}</td>
-      <td>${bouncer.revoked ? '<span class="badge ban">revoked</span>' : statusBadge(bouncer.last_pull && new Date(bouncer.last_pull).getTime() > cutoff, 'active', 'idle')}</td>
+      <td>${bouncer.revoked ? badge('revoked', 'ban') : statusBadge(bouncer.last_pull && new Date(bouncer.last_pull).getTime() > cutoff, 'active', 'idle')}</td>
     </tr>`).join('');
 
   const features = metrics && metrics.features && metrics.features.length
@@ -1656,14 +1710,14 @@ async function renderInfrastructure() {
       ${metrics ? statCard('Bouncer requests', metricNumber(metrics, 'bouncer_requests', 'cs_lapi_bouncer_requests_total'), 'counter since reset') : ''}
     </div>
 
-    <div class="panel" style="margin-bottom:14px">
+    <div class="panel">
       <div class="panel-head"><h3>Machines</h3><span class="hint">${infra.db ? 'from the LAPI database' : 'database not readable'}</span></div>
       ${!machinesAvailable ? errorBox(infra.errors?.machines || 'Machine data unavailable: configure a readable SQLite database.') : infra.machines.length ? `<div class="table-wrap"><table>
         <thead><tr><th>Machine</th><th>Version</th><th>OS</th><th>Scenarios</th><th>Last seen</th><th>IP</th><th>State</th></tr></thead>
         <tbody>${machineRows}</tbody></table></div>` : '<div class="empty">No machines registered</div>'}
     </div>
 
-    <div class="panel" style="margin-bottom:14px">
+    <div class="panel">
       <div class="panel-head"><h3>Bouncers</h3></div>
       ${!bouncersAvailable ? errorBox(infra.errors?.bouncers || 'Bouncer data unavailable: configure a readable SQLite database.') : infra.bouncers.length ? `<div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Type</th><th>Version</th><th>OS</th><th>IP</th><th>Last pull</th><th>State</th></tr></thead>
@@ -1671,18 +1725,9 @@ async function renderInfrastructure() {
     </div>
 
     <div class="grid-3">
-      <div class="panel">
-        <div class="panel-head"><h3>LAPI routes</h3></div>
-        <div class="panel-body">${renderBarList(metrics ? metrics.top_routes : [])}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Chattiest machines</h3></div>
-        <div class="panel-body">${renderBarList(metrics ? metrics.top_machines : [])}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Chattiest bouncers</h3></div>
-        <div class="panel-body">${renderBarList(metrics ? metrics.top_bouncers : [])}</div>
-      </div>
+      ${section('LAPI routes', renderBarList(metrics ? metrics.top_routes : []))}
+      ${section('Chattiest machines', renderBarList(metrics ? metrics.top_machines : []))}
+      ${section('Chattiest bouncers', renderBarList(metrics ? metrics.top_bouncers : []))}
     </div>
 
     <div class="panel">
@@ -1697,10 +1742,7 @@ async function renderMetrics() {
   const view = $('#view');
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Metrics</h2><p>Prometheus counters since the engine last reset them. Unparsed lines can be normal and are not automatically parser errors.</p></div>
-      <div class="toolbar"><span class="hint" id="metrics-fetched"></span></div>
-    </div>
+    ${pageHeader('Metrics', 'Prometheus counters since the engine last reset them. Unparsed lines can be normal and are not automatically parser errors.', '<span class="hint" id="metrics-fetched"></span>')}
     <div id="metrics-body">${spinner()}</div>`;
 
   let data;
@@ -1715,7 +1757,7 @@ async function renderMetrics() {
 
   state.cache.updatedAt = data.fetched_at;
   const m = data.summary;
-  $('#metrics-fetched').textContent = `${data.samples} series · ${relTime(data.fetched_at)}`;
+  $('#metrics-fetched').textContent = `${fmtNum(data.samples)} series`;
 
   const koRate = m.parser_hits > 0 && (!m.present || m.present.cs_parser_hits_ko_total) ? ((m.parser_ko / m.parser_hits) * 100).toFixed(1) : null;
   const avgParse = m.avg_parse_ms != null ? `${m.avg_parse_ms.toFixed(2)} ms` : '—';
@@ -1734,49 +1776,32 @@ async function renderMetrics() {
     </div>
 
     <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head"><h3>Top parsers by hits</h3></div>
-        <div class="panel-body">${renderBarList(m.top_nodes)}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Top parsers by unparsed lines</h3></div>
-        <div class="panel-body">${renderBarList(m.top_nodes_ko)}</div>
-      </div>
+      ${section('Top parsers by hits', renderBarList(m.top_nodes))}
+      ${section('Top parsers by unparsed lines', renderBarList(m.top_nodes_ko))}
     </div>
 
     <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head"><h3>Active buckets</h3></div>
-        <div class="panel-body">${renderBarList(m.top_buckets)}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Bucket overflows</h3></div>
-        <div class="panel-body">${renderBarList(m.top_overflows)}</div>
-      </div>
+      ${section('Active buckets', renderBarList(m.top_buckets))}
+      ${section('Bucket overflows', renderBarList(m.top_overflows))}
     </div>
 
-    <div class="panel" style="margin-bottom:14px"><div class="panel-head"><h3>Log source diagnostics</h3><span class="hint">— = metric not exported; zero activity can be normal</span></div>
-      ${renderMetricRows(m.sources, [['read', 'Read'], ['parsed', 'Parsed'], ['unparsed', 'Unparsed'], ['poured', 'Poured into buckets'], ['allowlisted', 'Allowlisted']])}</div>
-    ${m.appsec?.length || m.appsec_rules?.length ? `<div class="panel" style="margin-bottom:14px"><div class="panel-head"><h3>AppSec</h3><span class="hint">counters since reset</span></div>
+    <div class="panel">
+      <div class="panel-head"><h3>Log source diagnostics</h3><span class="hint">— = metric not exported; zero activity can be normal</span></div>
+      ${renderMetricRows(m.sources, [['read', 'Read'], ['parsed', 'Parsed'], ['unparsed', 'Unparsed'], ['poured', 'Poured into buckets'], ['allowlisted', 'Allowlisted']])}
+    </div>
+    ${m.appsec?.length || m.appsec_rules?.length ? `<div class="panel">
+      <div class="panel-head"><h3>AppSec</h3><span class="hint">counters since reset</span></div>
       ${renderMetricRows(m.appsec, [['processed', 'Processed'], ['blocked', 'Blocked'], ['requested', 'Challenges requested'], ['accepted', 'Challenges accepted'], ['rejected', 'Challenges rejected']])}
       <div class="panel-body"><h4>Most triggered AppSec rules</h4>${renderBarList(m.appsec_rules)}</div></div>` : ''}
     <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head"><h3>Acquisition sources</h3><span class="hint">lines read</span></div>
-        <div class="panel-body">${renderBarList(m.top_sources)}</div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Pipeline health</h3></div>
-        <div class="panel-body">
-          <dl class="kv" style="margin:0">
+      ${section('Acquisition sources', renderBarList(m.top_sources))}
+      ${section('Pipeline health', `<dl class="kv m0">
             <dt>Postoverflow queue</dt><dd>${metricNumber(m, 'postoverflow_queue', 'cs_postoverflow_queue_depth')} waiting</dd>
             <dt>Postoverflow dropped</dt><dd>${metricNumber(m, 'postoverflow_dropped', 'cs_postoverflow_dropped_total')}</dd>
             <dt>Bucket pours</dt><dd>${metricNumber(m, 'bucket_poured', 'cs_bucket_poured_total')}</dd>
             <dt>CAPI errors</dt><dd>${metricNumber(m, 'capi_errors', 'cs_capi_errors_total')}</dd>
             <dt>Version</dt><dd class="mono">${esc(m.version || '—')}</dd>
-          </dl>
-        </div>
-      </div>
+          </dl>`)}
     </div>`;
 }
 
@@ -1787,15 +1812,15 @@ const hubFilter = { search: '', category: '', installedOnly: true };
 let hubData = null;
 
 function hubBadges(item) {
-  const state = item.enabled
+  const itemState = item.enabled
     ? '<span class="badge ok">active</span>'
     : item.installed
       ? '<span class="badge warn">inactive</span>'
       : '<span class="badge off">not in use</span>';
 
-  if (!item.tainted) return state;
+  if (!item.tainted) return itemState;
 
-  return `${state} <span class="badge warn" title="changed by hand: an upgrade leaves it alone">edited</span>`;
+  return `${itemState} <span class="badge warn" title="changed by hand: an upgrade leaves it alone">edited</span>`;
 }
 
 function hubBundles(item) {
@@ -1809,8 +1834,7 @@ function hubActionButton(category, item) {
   const label = item.enabled ? 'Remove' : item.installed ? 'Activate' : 'Install';
 
   return `<button class="btn ${item.enabled ? 'danger' : ''}" data-hub-action data-path="${path}" ` +
-    `data-category="${esc(category)}" data-name="${esc(item.name)}" ` +
-    `style="padding:4px 9px;font-size:12px">${label}</button>`;
+    `data-category="${esc(category)}" data-name="${esc(item.name)}">${label}</button>`;
 }
 
 function hubFilteredItems() {
@@ -1857,7 +1881,7 @@ function renderHubLists() {
 
   $('#hub-summary').innerHTML = `
     <div class="card"><div class="label">Hub index</div>
-      <div class="value" style="font-size:20px">${status.index_missing ? 'missing' : esc(relTime(status.index_updated))}</div></div>
+      <div class="value compact">${status.index_missing ? 'missing' : esc(relTime(status.index_updated))}</div></div>
     <div class="card"><div class="label">Items in the hub</div><div class="value">${fmtNum(available)}</div></div>
     <div class="card"><div class="label">Active</div><div class="value">${fmtNum(enabled)}</div></div>
     <div class="card"><div class="label">Downloaded</div><div class="value">${fmtNum(installed)}</div></div>
@@ -1871,17 +1895,17 @@ function renderHubLists() {
   const items = hubFilteredItems();
   const rows = items.map((item) => `
     <tr>
-      <td class="mono hub-description">${esc(item.name)}${item.description ? `<div class="hint">${esc(item.description)}</div>` : ''}</td>
-      <td>${esc(item.category)}</td>
-      <td class="mono">${esc(item.local_version || (item.installed ? 'unknown' : '—'))} → ${esc(item.version || '—')}${item.update_available ? ' ' + badge('update available', 'warn') : ''}</td>
-      <td>${hubBadges(item)}</td>
-      <td class="hint">${hubBundles(item)}</td>
-      <td>${hubActionButton(item.category, item)}${item.update_available ? ` <button class="btn secondary" data-hub-action data-path="/api/hub/upgrade" data-category="${esc(item.category)}" data-name="${esc(item.name)}">Upgrade item</button>` : ''}</td>
+      <td class="hub-description"><span class="mono">${esc(item.name)}</span><div class="hub-inline">${hubBadges(item)}</div>${item.description ? `<div class="hint">${esc(item.description)}</div>` : ''}</td>
+      <td class="col-type">${esc(item.category)}</td>
+      <td class="mono col-version">${esc(item.local_version || (item.installed ? 'unknown' : '—'))} → ${esc(item.version || '—')}${item.update_available ? ' ' + badge('update available', 'warn') : ''}</td>
+      <td class="col-state">${hubBadges(item)}</td>
+      <td class="hint col-bundles">${hubBundles(item)}</td>
+      <td class="col-actions"><div class="row-actions">${hubActionButton(item.category, item)}${item.update_available ? `<button class="btn secondary" data-hub-action data-path="/api/hub/upgrade" data-category="${esc(item.category)}" data-name="${esc(item.name)}">Upgrade</button>` : ''}</div></td>
     </tr>`).join('');
 
   $('#hub-items').innerHTML = rows
-    ? `<div class="table-wrap"><table>
-        <thead><tr><th>Item</th><th>Type</th><th>Installed → available</th><th>State</th><th>Bundles</th><th></th></tr></thead>
+    ? `<div class="table-wrap hub-table"><table class="hub-list">
+        <thead><tr><th>Item</th><th class="col-type">Type</th><th class="col-version">Installed → available</th><th class="col-state">State</th><th class="col-bundles">Bundles</th><th class="col-actions"></th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
     : '<div class="empty">Nothing matches: untick "installed only" to browse the whole hub</div>';
 
@@ -1940,21 +1964,17 @@ async function renderHub() {
   const view = $('#view');
 
   view.innerHTML = `
-    <div class="page-header">
-      <div><h2>Hub</h2><p>What the engine detects with: parsers, scenarios, contexts, collections.</p></div>
-      <div class="toolbar">
+    ${pageHeader('Hub', 'What the engine detects with: parsers, scenarios, contexts, collections.', `
         <button class="btn secondary" data-hub-update>Refresh index</button>
-        <button class="btn secondary" data-hub-upgrade>Upgrade items</button>
-      </div>
-    </div>
+        <button class="btn secondary" data-hub-upgrade>Upgrade items</button>`)}
     <div class="cards" id="hub-summary">${spinner()}</div>
-    <div class="panel" style="margin-bottom:14px">
+    <div class="panel">
       <div class="panel-head"><h3>Items</h3><span class="hint" id="hub-count"></span></div>
       <div class="panel-body">
-        <div class="toolbar">
-          <input type="text" id="hub-search" aria-label="Search hub items" placeholder="filter by name or description" value="${esc(hubFilter.search)}" style="flex:1;min-width:180px">
+        <div class="toolbar mb-14">
+          <input type="text" id="hub-search" aria-label="Search hub items" placeholder="Filter by name or description" value="${esc(hubFilter.search)}" class="grow">
           <select id="hub-category" aria-label="Item type"></select>
-          <label class="hint"><input type="checkbox" id="hub-installed" ${hubFilter.installedOnly ? 'checked' : ''}> installed only</label>
+          <label class="checkbox"><input type="checkbox" id="hub-installed" ${hubFilter.installedOnly ? 'checked' : ''}>Installed only</label>
         </div>
         <div id="hub-items">${spinner()}</div>
       </div>
@@ -1970,7 +1990,7 @@ async function renderHub() {
     status = await api('/api/hub');
   } catch (error) {
     if (error.name === 'AbortError') throw error;
-    view.innerHTML = `<div class="page-header"><div><h2>Hub</h2></div></div>${errorBox(error.message, true)}`;
+    view.innerHTML = `${pageHeader('Hub', 'What the engine detects with.')}${errorBox(error.message, true)}`;
 
     return;
   }

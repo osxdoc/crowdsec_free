@@ -21,7 +21,7 @@ function filteredLink(kind, key, value) {
 }
 
 function freshness(iso) {
-  return iso ? `Updated ${relTime(iso)} · ${fmtDate(iso)}` : 'Data timestamp unavailable';
+  return iso ? `Updated ${relTime(iso)}` : 'Timestamp unavailable';
 }
 
 function mountRefresh(iso) {
@@ -33,19 +33,19 @@ function mountRefresh(iso) {
   const controls = document.createElement('div');
   controls.className = 'refresh-controls';
   controls.innerHTML = `
-    <span class="hint" data-freshness>${esc(freshness(iso))}</span>
+    <span class="hint" data-freshness title="${esc(fmtDate(iso))}">${esc(freshness(iso))}</span>
     <button class="icon-btn" data-refresh type="button" title="Refresh now" aria-label="Refresh now">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+      <svg viewBox="0 0 24 24"><use href="#i-refresh"/></svg>
     </button>
     <details class="menu" data-auto-menu>
       <summary class="icon-btn" title="Auto refresh" aria-label="Auto refresh">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <svg viewBox="0 0 24 24"><use href="#i-clock"/></svg>
       </summary>
       <div class="menu-body">
-        <label for="auto-refresh">Auto refresh</label>
-        <select aria-label="Auto refresh interval" id="auto-refresh">
-          ${[[0, 'Off'], [30, '30 seconds'], [60, '1 minute'], [300, '5 minutes']].map(([value, label]) => `<option value="${value}" ${refreshInterval === value ? 'selected' : ''}>${label}</option>`).join('')}
-        </select>
+        <label>Auto refresh</label>
+        <div class="menu-options">
+          ${[[0, 'Off'], [30, '30s'], [60, '1m'], [300, '5m']].map(([value, label]) => `<button type="button" data-interval="${value}" class="${refreshInterval === value ? 'active' : ''}">${label}</button>`).join('')}
+        </div>
       </div>
     </details>`;
   toolbar.appendChild(controls);
@@ -56,10 +56,13 @@ function mountRefresh(iso) {
   };
   updateTime();
   $('[data-refresh]', controls).addEventListener('click', route);
-  $('#auto-refresh', controls).addEventListener('change', (event) => {
-    refreshInterval = Number(event.target.value);
-    scheduleRefresh();
-    $('[data-auto-menu]', controls).removeAttribute('open');
+  $$('[data-interval]', controls).forEach((option) => {
+    option.addEventListener('click', () => {
+      refreshInterval = Number(option.dataset.interval);
+      $$('[data-interval]', controls).forEach((item) => item.classList.toggle('active', item === option));
+      scheduleRefresh();
+      $('[data-auto-menu]', controls).removeAttribute('open');
+    });
   });
   scheduleRefresh();
 }
@@ -113,11 +116,13 @@ function enhanceTables(root = $('#view')) {
       });
       th.replaceChildren(button);
     });
+    if (table.closest('dialog')) return;
     const tools = document.createElement('div');
     tools.className = 'table-tools';
     const exportButton = document.createElement('button');
     exportButton.className = 'btn secondary';
-    exportButton.textContent = `Export ${$$('tbody tr', table).length} displayed rows (CSV)`;
+    exportButton.textContent = 'Export CSV';
+    exportButton.title = `Export the ${$$('tbody tr', table).length} displayed rows`;
     exportButton.addEventListener('click', () => {
       const csv = $$('tr', table).map((row) => Array.from(row.cells).map((cell) => csvCell(cell.textContent)).join(',')).join('\r\n');
       const url = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
@@ -126,7 +131,8 @@ function enhanceTables(root = $('#view')) {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     tools.appendChild(exportButton);
-    (table.closest('.table-wrap') || table).before(tools);
+    const anchor = table.closest('.table-wrap') || table;
+    anchor.after(tools);
   });
 }
 
@@ -143,9 +149,11 @@ function renderMetricRows(rows, columns) {
 function renderHealth(data) {
   if (!data.health) return '';
   const names = { lapi: 'Local API', database: 'Database', metrics: 'Metrics', blocklist: 'Blocklist server' };
-  return `<div class="panel health-panel"><div class="panel-head"><h3>Service health</h3><span class="hint">${esc(freshness(data.generated_at))}</span></div>
-    <div class="health-grid">${Object.entries(data.health).map(([name, health]) => `<div><strong>${esc(names[name] || name)}</strong>
-      ${badge(health.state.replaceAll('_', ' '), health.state === 'ok' ? 'ok' : health.state === 'not_configured' ? 'off' : 'warn')}
+  return `<div class="health-block">
+    <h4>Service health</h4>
+    <div class="health-grid">${Object.entries(data.health).map(([name, health]) => `<div>
+      <span class="health-line"><strong>${esc(names[name] || name)}</strong>
+      ${badge(health.state.replaceAll('_', ' '), health.state === 'ok' ? 'ok' : health.state === 'not_configured' ? 'off' : 'warn')}</span>
       ${health.detail ? `<p class="hint">${esc(health.detail)}</p>` : ''}</div>`).join('')}</div>
     <p class="hint panel-note">Alert aggregates: ${esc(data.alert_source || 'unknown')}${data.alert_source === 'api' ? ' · based on at most 1,000 matching alerts; not a guaranteed full total' : ''}${data.alerts_limited ? ' · limit reached' : ''}. Prometheus counters accumulate until the engine resets them; they do not use the alert time range.</p></div>`;
 }
@@ -188,20 +196,36 @@ async function checkSavedConfig() {
 
 async function renderInspect() {
   const ip = new URLSearchParams(location.hash.split('?')[1] || '').get('ip') || '';
-  $('#view').innerHTML = `<div class="page-header"><div><h2>IP lookup</h2><p>Alerts, active decisions and allowlist matches, including ranges containing this IP.</p></div></div>
-    <div class="panel"><div class="panel-body"><form id="ip-lookup" class="toolbar"><label for="inspect-ip">IP address</label><input id="inspect-ip" type="text" value="${esc(ip)}" placeholder="192.0.2.1 or 2001:db8::1" required><button class="btn">Inspect</button></form></div></div><div id="inspect-body"></div>`;
+  $('#view').innerHTML = `${pageHeader('IP lookup', 'Alerts, active decisions and allowlist matches, including ranges containing this IP.', `
+    <form id="ip-lookup" class="lookup">
+      <input id="inspect-ip" type="text" aria-label="IP address" value="${esc(ip)}" placeholder="192.0.2.1 or 2001:db8::1" required>
+      <button class="btn">Inspect</button>
+    </form>`)}
+    <div id="inspect-body">${ip ? spinner() : '<div class="panel"><div class="empty">Enter an IP address to see everything the engine knows about it.</div></div>'}</div>`;
   $('#ip-lookup').addEventListener('submit', (event) => {
     event.preventDefault();
     const hash = `#/inspect?${new URLSearchParams({ ip: $('#inspect-ip').value.trim() })}`;
     if (location.hash === hash) route(); else location.hash = hash;
   });
   if (!ip) return;
-  $('#inspect-body').innerHTML = spinner();
   const data = await api(`/api/inspect?${new URLSearchParams({ ip })}`);
-  $('#inspect-body').innerHTML = `<p class="hint">${esc(freshness(data.generated_at))}</p>
-    <div class="panel" style="margin-top:14px"><div class="panel-head"><h3>Allowlist match</h3></div><div class="panel-body">${data.errors.allowlist ? errorBox(data.errors.allowlist) : `${badge(data.allowlist?.allowlisted ? 'allowlisted' : 'no match', data.allowlist?.allowlisted ? 'ok' : '')} <span>${esc(data.allowlist?.reason || '')}</span>`}</div></div>
-    <div class="panel" style="margin-top:14px"><div class="panel-head"><h3>Active decisions</h3></div>${data.errors.decisions ? errorBox(data.errors.decisions) : renderDecisionsTable(data.decisions, false) + resultCount(data.decisions.length, data.limit, data.decisions_limited)}</div>
-    <div class="panel" style="margin-top:14px"><div class="panel-head"><h3>Matching alerts</h3></div>${data.errors.alerts ? errorBox(data.errors.alerts) : `<div class="table-wrap">${renderAlertsTable(data.alerts)}</div>${resultCount(data.alerts.length, data.limit, data.alerts_limited)}`}</div>`;
+  const allowlisted = data.allowlist?.allowlisted;
+  $('#inspect-body').innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3>Allowlist match</h3><span class="hint">${esc(freshness(data.generated_at))}</span></div>
+      <div class="panel-body">${data.errors.allowlist ? errorBox(data.errors.allowlist) : `<div class="lookup-result">
+        ${badge(allowlisted ? 'allowlisted' : 'not allowlisted', allowlisted ? 'ok' : 'off')}
+        <span class="hint">${esc(data.allowlist?.reason || (allowlisted ? 'This address is never banned.' : 'Decisions apply to this address.'))}</span>
+      </div>`}</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Active decisions</h3></div>
+      ${data.errors.decisions ? errorBox(data.errors.decisions) : renderDecisionsTable(data.decisions, false) + resultCount(data.decisions.length, data.limit, data.decisions_limited)}
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Matching alerts</h3></div>
+      ${data.errors.alerts ? errorBox(data.errors.alerts) : `<div class="table-wrap">${renderAlertsTable(data.alerts)}</div>${resultCount(data.alerts.length, data.limit, data.alerts_limited)}`}
+    </div>`;
 }
 
 function showAllowlistForm(name = null) {
@@ -210,7 +234,8 @@ function showAllowlistForm(name = null) {
       <div class="field"><label for="al-duration">Duration (empty = permanent)</label><input id="al-duration" type="text" placeholder="7d"></div>` : '<div class="field"><label for="al-name">Name</label><input id="al-name" type="text" maxlength="128" required autofocus></div>'}
     <div class="field"><label for="al-description">${name ? 'Comment' : 'Description'}</label><input id="al-description" type="text" maxlength="1024" ${name ? '' : 'required'}></div>
     <p class="hint">${name ? 'Matching existing decisions will be removed immediately. No engine reload is needed.' : 'Create a local allowlist. Console-managed lists remain read-only.'}</p>
-    <div class="form-actions"><button class="btn" type="submit">${name ? 'Add entry' : 'Create'}</button></div></form>`, () => {
+    <div class="form-actions end"><button class="btn secondary" type="button" data-close-modal>Cancel</button><button class="btn" type="submit">${name ? 'Add entry' : 'Create'}</button></div></form>`, () => {
+    $('[data-close-modal]', $('#modal-root'))?.addEventListener('click', closeModal);
     $('#allowlist-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const form = event.currentTarget;
