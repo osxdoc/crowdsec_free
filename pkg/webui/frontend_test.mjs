@@ -10,6 +10,7 @@ function ui(options = {}) {
   const elements = new Map();
   const groups = new Map();
   const listenerSink = [];
+  const windowListeners = [];
   const element = (selector, value = '') => {
     const node = {
       value, disabled: false, isConnected: true, innerHTML: '', textContent: '', dataset: {},
@@ -41,7 +42,10 @@ function ui(options = {}) {
     AbortController, URLSearchParams, console, setTimeout, clearTimeout,
     location: { hash: '#/config' },
     history: { replaceState(_state, _title, hash) { context.location.hash = hash; } },
-    window: { addEventListener() {}, matchMedia: options.matchMedia },
+    window: {
+      addEventListener(name, fn) { windowListeners.push({ name, fn }); },
+      matchMedia: options.matchMedia,
+    },
     localStorage: options.storage,
     document: {
       addEventListener(name, fn) { listenerSink.push({ name, fn }); },
@@ -55,7 +59,7 @@ function ui(options = {}) {
   if (options.seed) options.seed(element, elements);
   const run = (code) => vm.runInContext(code, context);
   run(source);
-  return { element, elements, groups, context, run, documentListeners: listenerSink };
+  return { element, elements, groups, context, run, documentListeners: listenerSink, windowListeners };
 }
 
 test('configuration navigation asks before discarding edits', async (t) => {
@@ -412,13 +416,13 @@ test('the theme toggle survives reloads and reflects the effective scheme', () =
 });
 
 test('the mobile drawer closes on Escape and restores focus to its toggle', () => {
-  const { elements, run, documentListeners } = ui();
+  const { elements, run, windowListeners } = ui();
   run(`setNavOpen(true)`);
   const sidebar = elements.get('.sidebar');
   const toggle = elements.get('#nav-toggle');
   assert.equal(sidebar.classList.contains('nav-open'), true);
   assert.equal(toggle.attributes['aria-expanded'], 'true');
-  const escape = documentListeners.find((listener) => listener.name === 'keydown');
+  const escape = windowListeners.find((listener) => listener.name === 'keydown');
   escape.fn({ key: 'Escape' });
   assert.equal(sidebar.classList.contains('nav-open'), false);
   assert.equal(toggle.attributes['aria-expanded'], 'false');
@@ -432,4 +436,78 @@ test('an allowlist failure keeps the page usable instead of blanking the view', 
   assert.match(body.innerHTML, /Service unavailable/);
   assert.match(body.innerHTML, /data-retry/);
   assert.doesNotMatch(body.innerHTML, /No allowlists configured/);
+});
+
+test('collapsing the sidebar persists and only overlays when the rail is hovered', () => {
+  const stored = new Map();
+  const app = { classList: {
+    tokens: new Set(),
+    add(t) { this.tokens.add(t); }, remove(t) { this.tokens.delete(t); },
+    contains(t) { return this.tokens.has(t); },
+    toggle(t, force) { const on = force ?? !this.tokens.has(t); if (on) this.tokens.add(t); else this.tokens.delete(t); return on; },
+  } };
+  const { run } = ui({
+    storage: { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, v) },
+    seed: (element, elements) => {
+      elements.set('#app', app);
+      element('#nav-collapse');
+    },
+  });
+  run(`applySidebar(false)`);
+  assert.equal(app.classList.contains('rail'), false);
+
+  run(`$('#nav-collapse').listeners.click()`);
+  assert.equal(stored.get('cswebui.sidebar'), 'collapsed');
+  assert.equal(app.classList.contains('rail'), true);
+  // A collapsed rail must not overlay until it is hovered or focused.
+  assert.equal(app.classList.contains('rail-hover'), false);
+  run(`setRailHover(true)`);
+  assert.equal(app.classList.contains('rail-hover'), true);
+  run(`setRailHover(false)`);
+  assert.equal(app.classList.contains('rail-hover'), false);
+  // A full sidebar never overlays.
+  run(`applySidebar(false); setRailHover(true)`);
+  assert.equal(app.classList.contains('rail-hover'), false);
+});
+
+test('Escape closes the rail overlay before the drawer', () => {
+  const app = { classList: {
+    tokens: new Set(),
+    add(t) { this.tokens.add(t); }, remove(t) { this.tokens.delete(t); },
+    contains(t) { return this.tokens.has(t); },
+    toggle(t, force) { const on = force ?? !this.tokens.has(t); if (on) this.tokens.add(t); else this.tokens.delete(t); return on; },
+  } };
+  const { run, windowListeners } = ui({ seed: (_element, elements) => { elements.set('#app', app); } });
+  const escape = windowListeners.find((listener) => listener.name === 'keydown');
+  run(`applySidebar(true); setNavOpen(true); setRailHover(true)`);
+  escape.fn({ key: 'Escape' });
+  assert.equal(app.classList.contains('rail-hover'), false);
+  assert.equal(run(`$('.sidebar').classList.contains('nav-open')`), true, 'the first Escape only dismisses the overlay');
+  escape.fn({ key: 'Escape' });
+  assert.equal(run(`$('.sidebar').classList.contains('nav-open')`), false);
+});
+
+test('the chart hover readout snaps to real samples and stays inside the frame', () => {
+  const points = [
+    { time: '2026-10-30T08:00:00Z', count: 3 },
+    { time: '2026-10-30T09:00:00Z', count: 9 },
+    { time: '2026-10-30T10:00:00Z', count: 0 },
+  ];
+  const html = (() => {
+    const { run } = ui();
+    return run(`renderChart(${JSON.stringify(points)})`);
+  })();
+  assert.match(html, /data-chart/);
+  assert.match(html, /chart-tip/);
+  assert.match(html, /class="chart-data"/);
+  const payload = JSON.parse(/<script type="application\/json" class="chart-data">([\s\S]*?)<\/script>/.exec(html)[1]);
+  assert.deepEqual(payload.map((s) => s.count), [3, 9, 0]);
+  assert.equal(payload[0].x, 8, 'first sample starts at the padding');
+  assert.equal(payload.at(-1).x, 792, 'last sample ends at the padding');
+
+  const { run } = ui();
+  const pick = (ratio) => run(`chartIndexAt(${ratio}, 3)`);
+  assert.equal(pick(-0.5), 0, 'left of the plot snaps to the first sample');
+  assert.equal(pick(1.5), 2, 'right of the plot snaps to the last sample');
+  assert.equal(pick(0.4), 1, 'the middle of the frame selects the middle bucket');
 });
