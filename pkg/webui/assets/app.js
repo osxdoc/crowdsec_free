@@ -1057,6 +1057,36 @@ function chartIndexAt(ratio, count) {
   return Math.max(0, Math.min(count - 1, Math.round(ratio * (count - 1))));
 }
 
+const TIP_GAP = 10;
+
+// The enclosing panel clips overflow, so the tooltip has to stay inside the
+// frame. Prefer above the point, use below when only that fits, and when
+// neither side fits (a tall tooltip in a short chart) clamp it into the frame
+// rather than letting its edge disappear.
+function tooltipTop(pointY, tipHeight, frameHeight) {
+  const height = tipHeight || 0;
+  if (!frameHeight) return null;
+
+  const above = pointY - height - TIP_GAP;
+  if (above >= 0) return above;
+
+  const below = pointY + TIP_GAP;
+  if (below + height <= frameHeight) return below;
+
+  const roomAbove = pointY;
+  const roomBelow = frameHeight - pointY;
+  const preferred = roomAbove >= roomBelow ? above : below;
+
+  return Math.max(0, Math.min(frameHeight - height, preferred));
+}
+
+// Which side the tooltip ended up on, for styling hooks and tests.
+function tooltipPlacement(pointY, tipHeight, frameHeight) {
+  const top = tooltipTop(pointY, tipHeight, frameHeight);
+  if (top === null) return 'above';
+  return top < pointY ? 'above' : 'below';
+}
+
 // Pointer readout for the timeline: snapping to the nearest sample keeps the
 // tooltip on real data instead of interpolating between buckets.
 function mountChartHover(root = $('#view')) {
@@ -1104,10 +1134,19 @@ function mountChartHover(root = $('#view')) {
         .map(([name, count]) => `<span class="tip-band"><span>${esc(name)}</span><strong>${fmtNum(count)}</strong></span>`)
         .join('');
       tip.innerHTML = `<strong>${fmtNum(sample.count)}</strong> alert(s)<span>${esc(chartTime(sample.time))}</span>${bands ? `<span class="tip-bands">${bands}</span>` : ''}`;
-      // Keep the tooltip inside the frame instead of clipping at the edges.
+      // Keep the tooltip inside the frame: the panel clips its overflow, so a
+      // tooltip above the first row would lose its top edge.
       const ratio = sample.x / viewWidth;
       tip.style.left = `${(ratio * 100).toFixed(2)}%`;
       tip.dataset.edge = ratio < 0.12 ? 'start' : ratio > 0.88 ? 'end' : 'mid';
+
+      const frameHeight = frame.clientHeight || 0;
+      const viewHeight = svg.viewBox.baseVal.height || 170;
+      const pointY = (sample.y / viewHeight) * frameHeight;
+      const top = tooltipTop(pointY, tip.offsetHeight, frameHeight);
+      if (top === null) tip.style.removeProperty('top');
+      else tip.style.top = `${top.toFixed(1)}px`;
+      tip.dataset.place = tooltipPlacement(pointY, tip.offsetHeight, frameHeight);
     };
 
     const hide = () => {
