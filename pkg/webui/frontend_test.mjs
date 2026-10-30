@@ -59,7 +59,14 @@ function ui(options = {}) {
   if (options.seed) options.seed(element, elements);
   const run = (code) => vm.runInContext(code, context);
   run(source);
-  return { element, elements, groups, context, run, documentListeners: listenerSink, windowListeners };
+  // The browser dispatches a key event to every registered listener; tests must
+  // do the same, otherwise adding a handler silently changes which one "wins".
+  const pressKey = (event) => {
+    for (const listener of windowListeners) {
+      if (listener.name === 'keydown') listener.fn(event);
+    }
+  };
+  return { element, elements, groups, context, run, documentListeners: listenerSink, windowListeners, pressKey };
 }
 
 test('configuration navigation asks before discarding edits', async (t) => {
@@ -243,7 +250,9 @@ test('out-of-order filter responses cannot overwrite newer results', async (t) =
       await t.test(`${kind}: stale ${fails ? 'failure' : 'success'}`, async () => {
         const { element, elements, context, run } = ui();
         const prefix = kind === 'alerts' ? 'f' : 'd';
-        const fields = kind === 'alerts' ? ['scenario', 'ip', 'limit'] : ['ip', 'range', 'value', 'type'];
+        const fields = kind === 'alerts'
+          ? ['scenario', 'ip', 'limit', 'value', 'contains', 'decision_type', 'has_active_decision']
+          : ['ip', 'range', 'value', 'type'];
         for (const field of fields) element(`#${prefix}-${field}`, field === 'limit' ? '100' : '');
         for (const id of [`#${kind}-body`, kind === 'alerts' ? '#alert-filters' : '#decision-filters', '#add-decision']) element(id);
         context.pending = [];
@@ -416,14 +425,13 @@ test('the theme toggle survives reloads and reflects the effective scheme', () =
 });
 
 test('the mobile drawer closes on Escape and restores focus to its toggle', () => {
-  const { elements, run, windowListeners } = ui();
+  const { elements, run, pressKey } = ui();
   run(`setNavOpen(true)`);
   const sidebar = elements.get('.sidebar');
   const toggle = elements.get('#nav-toggle');
   assert.equal(sidebar.classList.contains('nav-open'), true);
   assert.equal(toggle.attributes['aria-expanded'], 'true');
-  const escape = windowListeners.find((listener) => listener.name === 'keydown');
-  escape.fn({ key: 'Escape' });
+  pressKey({ key: 'Escape' });
   assert.equal(sidebar.classList.contains('nav-open'), false);
   assert.equal(toggle.attributes['aria-expanded'], 'false');
 });
@@ -477,13 +485,12 @@ test('Escape closes the rail overlay before the drawer', () => {
     contains(t) { return this.tokens.has(t); },
     toggle(t, force) { const on = force ?? !this.tokens.has(t); if (on) this.tokens.add(t); else this.tokens.delete(t); return on; },
   } };
-  const { run, windowListeners } = ui({ seed: (_element, elements) => { elements.set('#app', app); } });
-  const escape = windowListeners.find((listener) => listener.name === 'keydown');
+  const { run, pressKey } = ui({ seed: (_element, elements) => { elements.set('#app', app); } });
   run(`applySidebar(true); setNavOpen(true); setRailHover(true)`);
-  escape.fn({ key: 'Escape' });
+  pressKey({ key: 'Escape' });
   assert.equal(app.classList.contains('rail-hover'), false);
   assert.equal(run(`$('.sidebar').classList.contains('nav-open')`), true, 'the first Escape only dismisses the overlay');
-  escape.fn({ key: 'Escape' });
+  pressKey({ key: 'Escape' });
   assert.equal(run(`$('.sidebar').classList.contains('nav-open')`), false);
 });
 
@@ -510,4 +517,124 @@ test('the chart hover readout snaps to real samples and stays inside the frame',
   assert.equal(pick(-0.5), 0, 'left of the plot snaps to the first sample');
   assert.equal(pick(1.5), 2, 'right of the plot snaps to the last sample');
   assert.equal(pick(0.4), 1, 'the middle of the frame selects the middle bucket');
+});
+
+test('the stacked chart never invents bands and keeps the total readable', () => {
+  const { run } = ui();
+  const points = [
+    { time: '2026-10-30T08:00:00Z', count: 5, breakdown: { 'a/one': 3, 'b/two': 2 } },
+    { time: '2026-10-30T09:00:00Z', count: 4, breakdown: { 'a/one': 4 } },
+  ];
+  const html = run(`renderStackedChart(${JSON.stringify(points)}, [{name:'a/one',count:7},{name:'b/two',count:2}])`);
+  const payload = JSON.parse(/<script type="application\/json" class="chart-data">([\s\S]*?)<\/script>/.exec(html)[1]);
+  assert.deepEqual(payload.map((p) => p.count), [5, 4]);
+  assert.deepEqual(payload[0].breakdown, { 'a/one': 3, 'b/two': 2 });
+  assert.match(html, /chart-legend-series/);
+  assert.match(html, /a\/one/, 'the legend names every band');
+
+  // Without a breakdown the caller gets the plain line chart instead.
+  assert.doesNotMatch(run(`renderStackedChart(${JSON.stringify(points)}, [])`), /chart-legend-series/);
+});
+
+test('the expiry horizon buckets only future expiries and keeps permanents apart', () => {
+  const now = Date.parse('2026-10-30T12:00:00Z');
+  const minutes = (m) => new Date(now + m * 60000).toISOString();
+  const decisions = [
+    { until: minutes(10) }, { until: minutes(59) },
+    { until: minutes(120) }, { until: minutes(500) },
+    { until: minutes(2000) }, { until: minutes(20000) },
+    { until: '0001-01-01T00:00:00Z' },
+    { until: minutes(-30) },
+  ];
+  const { run } = ui();
+  // Values from the vm context carry foreign prototypes; compare as plain data.
+  const summary = JSON.parse(JSON.stringify(run(`summarizeExpiry(${JSON.stringify(decisions)}, ${now})`)));
+  assert.deepEqual(summary.buckets.map((b) => [b.id, b.count]), [
+    ['soon', 2], ['today', 1], ['day', 1], ['week', 1], ['later', 1],
+  ], 'expired decisions are dropped, not counted');
+  assert.equal(summary.permanent, 1, 'permanent bans are their own bucket');
+
+  const html = run(`renderExpiryHorizon(${JSON.stringify(decisions)}, ${now})`);
+  assert.match(html, /horizon-bar permanent/);
+  assert.doesNotMatch(html, /No active decisions/, 'a populated set draws bars');
+  assert.match(run(`renderExpiryHorizon([], ${now})`), /No active decisions/);
+});
+
+test('a set filter is visible as a chip and can be removed without opening the panel', () => {
+  const { run, context } = ui();
+  run(`state.filters.alerts = { scenario: 'crowdsecurity/ssh-bf', limit: '100', include_capi: 'false', value: '1.2.3.4', contains: 'true' };
+       state.range = '24h';`);
+  const chips = JSON.parse(JSON.stringify(run('activeFilterChips("alerts")')));
+  assert.deepEqual(chips.map((chip) => chip.key), ['scenario', 'value', 'contains'], 'limit and include_capi are noise, not filters');
+
+  const html = run(`filterChips('alerts')`);
+  assert.match(html, /data-remove-filter="scenario"/);
+  assert.match(html, /crowdsecurity\/ssh-bf/);
+  assert.match(html, /Clear all/);
+  assert.match(run(`filterChips('decisions')`), /^$/, 'no filters, no chip row');
+
+  // Removing a value must also drop the now-meaningless "contains" flag.
+  context.routed = 0;
+  run(`state.route = 'alerts'; route = () => { state.routed++; };`);
+  run(`removeFilter('alerts', 'value')`);
+  assert.equal(run(`state.filters.alerts.value`), undefined);
+  assert.equal(run(`state.filters.alerts.contains`), undefined);
+  assert.equal(run(`state.filters.alerts.scenario`), 'crowdsecurity/ssh-bf');
+  assert.match(run(`state.hash`), /scenario=crowdsecurity%2Fssh-bf/);
+});
+
+test('the command palette matches every word across label, hint and keywords', () => {
+  const { run } = ui();
+  const names = (query) => JSON.parse(JSON.stringify(run(`matchPaletteActions(${JSON.stringify(query)}).map((a) => a.id)`)));
+  assert.ok(names('').length > 5, 'an empty query lists everything');
+  assert.deepEqual(names('ban'), ['decisions', 'new-decision'], 'a keyword finds its action, not just the label');
+  assert.deepEqual(names('ip lookup'), ['inspect']);
+  // Words from two different actions: only AND may drop both.
+  assert.deepEqual(names('hub map'), [], 'a word per action must not match either');
+  assert.deepEqual(names('nothing-like-this'), []);
+  assert.deepEqual(names('DARK'), ['theme'], 'matching is case-insensitive');
+});
+
+test('the palette opens on Cmd/Ctrl+K only while signed in and closes on a second press', () => {
+  const { run, pressKey, elements } = ui();
+  let opened = 0;
+  let closed = 0;
+  const dialog = { dataset: {}, isConnected: true, close() { this.isConnected = false; } };
+  elements.set('#modal-root', {
+    innerHTML: '',
+    querySelector: (selector) => (selector === 'dialog' ? dialog : null),
+    querySelectorAll: () => [],
+    set innerHTML(value) { this._html = value; },
+    get innerHTML() { return this._html || ''; },
+  });
+  run(`openPalette = () => { state.opened = true; }; closePalette = () => { state.closed = true; };`);
+  pressKey({ key: 'k', metaKey: true });
+  assert.equal(run('state.opened'), undefined, 'signed out, no palette');
+
+  run(`state.user = 'admin'`);
+  pressKey({ key: 'k', metaKey: true, preventDefault() {} });
+  assert.equal(run('state.opened'), true);
+  pressKey({ key: 'k', ctrlKey: true, preventDefault() {} });
+  assert.equal(run('state.opened'), true);
+});
+
+test('palette ranking puts a name match above an incidental keyword', () => {
+  const { run } = ui();
+  const names = (query) => JSON.parse(JSON.stringify(run(`matchPaletteActions(${JSON.stringify(query)}).map((a) => a.id)`)));
+
+  assert.equal(names('add')[0], 'new-decision');
+  assert.equal(names('map')[0], 'geo', 'the Geo page matches on its hint');
+  assert.equal(names('decision')[0], 'decisions', 'a label starting with the word wins');
+  // "col" is the start of "Collapse sidebar"; "collections" is only a Hub keyword.
+  assert.equal(names('col')[0], 'collapse', 'a name match must outrank a keyword match');
+  assert.deepEqual(names('zzz'), []);
+  assert.equal(names('')[0], 'dashboard', 'an empty query keeps declaration order');
+});
+
+test('an empty expiry bucket draws no bar instead of a misleading stub', () => {
+  const { run } = ui();
+  assert.equal(run('barHeight(0, 40)'), 0, 'a zero-hour must not look like data');
+  assert.equal(run('barHeight(40, 40)'), 100);
+  assert.ok(run('barHeight(1, 1000)') >= 3, 'a real count stays visible');
+  assert.equal(run('barHeight(0, 0)'), 0, 'an empty set draws nothing');
 });

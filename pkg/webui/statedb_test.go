@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -215,6 +217,95 @@ func TestStateStoreAlertStats(t *testing.T) {
 	require.Equal(t, 2, nonzero)
 }
 
+func TestAlertTimelineBreaksDownByScenario(t *testing.T) {
+	store := newTestStateStore(t)
+
+	stats, err := store.AlertStats(context.Background(), time.Now().Add(-24*time.Hour))
+	require.NoError(t, err)
+
+	require.NotEmpty(t, stats.Timeline)
+	require.NotEmpty(t, stats.TimelineScenario)
+
+	// Every bucket's bands must add up to the bucket total: the stacked chart
+	// reads the bands, the tooltip reads the total, and they may not disagree.
+	for _, point := range stats.Timeline {
+		sum := 0
+		for _, count := range point.Breakdown {
+			sum += count
+		}
+
+		require.Equal(t, point.Count, sum, "breakdown must sum to the bucket total")
+	}
+
+	bucketTotal := 0
+	for _, point := range stats.Timeline {
+		bucketTotal += point.Count
+	}
+
+	bandTotal := 0
+	for _, band := range stats.TimelineScenario {
+		bandTotal += band.Count
+	}
+
+	require.Equal(t, bucketTotal, bandTotal, "every counted alert belongs to a band")
+
+	names := map[string]bool{}
+	for _, band := range stats.TimelineScenario {
+		names[band.Name] = true
+	}
+
+	require.True(t, names["crowdsecurity/ssh-bf"])
+	require.True(t, names["crowdsecurity/http-probing"])
+}
+
+func TestAlertTimelineFoldsRareScenariosIntoOther(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapi.db")
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	require.NoError(t, err)
+	require.NoError(t, db.Ping())
+	_, err = db.Exec(testSchema)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+
+	// Seven scenarios: the five busiest get bands, the rest must land in "other".
+	for i := 0; i < 7; i++ {
+		repeats := 7 - i
+		for j := 0; j < repeats; j++ {
+			_, err = db.Exec(`INSERT INTO alerts (created_at, updated_at, scenario, events_count, source_ip, kind)
+				VALUES (?, ?, ?, 1, ?, 'crowdsec')`,
+				now.Add(-time.Duration(i+1)*time.Minute).String(), now.String(),
+				fmt.Sprintf("scenario-%d", i), fmt.Sprintf("10.0.0.%d", i))
+			require.NoError(t, err)
+		}
+	}
+
+	store, err := OpenStateStore(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	stats, err := store.AlertStats(context.Background(), now.Add(-time.Hour))
+	require.NoError(t, err)
+
+	labels := map[string]bool{}
+	for _, band := range stats.TimelineScenario {
+		labels[band.Name] = true
+	}
+
+	require.Len(t, stats.TimelineScenario, 6, "five bands plus the folded remainder")
+	require.True(t, labels["other"])
+
+	for _, point := range stats.Timeline {
+		sum := 0
+		for _, count := range point.Breakdown {
+			sum += count
+		}
+
+		require.Equal(t, point.Count, sum)
+	}
+}
+
 func TestStateStoreCountsBothTimestampFormats(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lapi.db")
 
@@ -282,4 +373,40 @@ func TestDatabasePathResolution(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
 		[]byte(fmt.Sprintf("db_config:\n  type: mysql\n  db_path: %s\n", "/x")), 0o600))
 	require.Empty(t, cfg2.DatabasePath())
+}
+
+func TestAPITimelineBreaksDownLikeTheDatabaseTimeline(t *testing.T) {
+	now := time.Now().UTC()
+
+	alerts := []*models.Alert{}
+	for i, scenario := range []string{"a/one", "a/one", "b/two", "c/three"} {
+		name := scenario
+		alerts = append(alerts, &models.Alert{
+			Scenario:  &name,
+			CreatedAt: now.Add(-time.Duration(i+1) * time.Minute).Format(time.RFC3339),
+		})
+	}
+
+	points := buildTimeline(alerts, 24*time.Hour)
+	require.NotEmpty(t, points)
+
+	// The API path is the fallback when no SQLite database is readable; it has
+	// to feed the same stacked chart, not silently drop the breakdown.
+	scenarios := timelineScenarios(points)
+	names := map[string]int{}
+	for _, scenario := range scenarios {
+		names[scenario.Name] = scenario.Count
+	}
+
+	require.Equal(t, 2, names["a/one"])
+	require.Equal(t, 1, names["b/two"])
+
+	for _, point := range points {
+		sum := 0
+		for _, count := range point.Breakdown {
+			sum += count
+		}
+
+		require.Equal(t, point.Count, sum, "bands must sum to the bucket total")
+	}
 }
