@@ -6,14 +6,25 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('assets/operations.js', import.meta.url), 'utf8') + '\n' + readFileSync(new URL('assets/app.js', import.meta.url), 'utf8').replace(/\nboot\(\);\s*$/, '\n');
 
-function ui() {
+function ui(options = {}) {
   const elements = new Map();
   const groups = new Map();
+  const listenerSink = [];
   const element = (selector, value = '') => {
     const node = {
       value, disabled: false, isConnected: true, innerHTML: '', textContent: '', dataset: {},
       listeners: {}, attributes: {},
-      classList: { add() {}, remove() {}, toggle() {} },
+      classList: {
+        tokens: new Set(),
+        add(token) { this.tokens.add(token); },
+        remove(token) { this.tokens.delete(token); },
+        contains(token) { return this.tokens.has(token); },
+        toggle(token, force) {
+          const next = force ?? !this.tokens.has(token);
+          if (next) this.tokens.add(token); else this.tokens.delete(token);
+          return next;
+        },
+      },
       addEventListener(name, fn) { this.listeners[name] = fn; },
       setAttribute(name, val) { this.attributes[name] = val; },
       getAttribute(name) { return this.attributes[name]; },
@@ -30,17 +41,21 @@ function ui() {
     AbortController, URLSearchParams, console, setTimeout, clearTimeout,
     location: { hash: '#/config' },
     history: { replaceState(_state, _title, hash) { context.location.hash = hash; } },
-    window: { addEventListener() {} },
+    window: { addEventListener() {}, matchMedia: options.matchMedia },
+    localStorage: options.storage,
     document: {
-      addEventListener() {},
+      addEventListener(name, fn) { listenerSink.push({ name, fn }); },
+      documentElement: options.documentElement,
       querySelector: (selector) => elements.get(selector) || null,
       querySelectorAll: (selector) => groups.get(selector) || [],
     },
     confirm: () => false,
+    ...options.globals,
   });
+  if (options.seed) options.seed(element, elements);
   const run = (code) => vm.runInContext(code, context);
   run(source);
-  return { element, elements, groups, context, run };
+  return { element, elements, groups, context, run, documentListeners: listenerSink };
 }
 
 test('configuration navigation asks before discarding edits', async (t) => {
@@ -351,4 +366,70 @@ test('date sorting uses timestamps and puts missing or permanent expiry after re
   for (const value of ['', '0001-01-01T00:00:00Z', 'invalid']) {
     assert.equal(run(`sortDate(${JSON.stringify(value)})`), Number.MAX_SAFE_INTEGER);
   }
+});
+
+test('each decisions column sorts by the field it displays', () => {
+  const { run } = ui();
+  run(`state.items = [
+    { value: '10.0.0.9', type: 'captcha', country: 'DE', as_name: 'Zeta', until: '2026-03-01T00:00:00Z', scenario: 'b/second', origin: 'cscli', alert_id: 7 },
+    { value: '10.0.0.10', type: 'ban', country: 'AT', as_name: 'Alpha', until: '2026-01-01T00:00:00Z', scenario: 'a/first', origin: 'CAPI', alert_id: 3 },
+  ];`);
+  const order = (index, ascending) => run(
+    `sortDecisions(state.items.slice(), ${index}, ${ascending}).map((d) => d.value).join(',')`,
+  );
+  // Column labels come from the table header order; index 1 is "Type".
+  assert.match(run(`decisionColumns[1].label`), /^Type$/);
+  assert.equal(order(1, true), '10.0.0.10,10.0.0.9');
+  assert.equal(order(1, false), '10.0.0.9,10.0.0.10');
+  assert.equal(order(0, true), '10.0.0.9,10.0.0.10', 'IP segments compare numerically, not lexicographically');
+  assert.equal(order(4, true), '10.0.0.10,10.0.0.9', 'expiry sorts by timestamp');
+  assert.equal(order(5, true), '10.0.0.10,10.0.0.9', 'scenario sorts by its own column');
+  assert.equal(order(7, false), '10.0.0.9,10.0.0.10', 'alert id sorts numerically');
+});
+
+test('the theme toggle survives reloads and reflects the effective scheme', () => {
+  const stored = new Map([['cswebui.theme', 'dark']]);
+  const documentElement = { dataset: {} };
+  const icon = { attributes: {}, setAttribute(name, value) { this.attributes[name] = value; } };
+  const { run } = ui({
+    storage: {
+      getItem: (key) => (stored.has(key) ? stored.get(key) : null),
+      setItem: (key, value) => stored.set(key, value),
+    },
+    documentElement,
+    seed: (element, elements) => {
+      element('#theme-toggle');
+      elements.set('#theme-toggle use', icon);
+    },
+  });
+  assert.equal(documentElement.dataset.theme, 'dark');
+  assert.equal(icon.attributes.href, '#i-sun');
+
+  run(`$('#theme-toggle').listeners.click()`);
+  assert.equal(stored.get('cswebui.theme'), 'light');
+  assert.equal(documentElement.dataset.theme, 'light');
+  assert.equal(icon.attributes.href, '#i-moon');
+});
+
+test('the mobile drawer closes on Escape and restores focus to its toggle', () => {
+  const { elements, run, documentListeners } = ui();
+  run(`setNavOpen(true)`);
+  const sidebar = elements.get('.sidebar');
+  const toggle = elements.get('#nav-toggle');
+  assert.equal(sidebar.classList.contains('nav-open'), true);
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  const escape = documentListeners.find((listener) => listener.name === 'keydown');
+  escape.fn({ key: 'Escape' });
+  assert.equal(sidebar.classList.contains('nav-open'), false);
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+});
+
+test('an allowlist failure keeps the page usable instead of blanking the view', async () => {
+  const { element, run } = ui();
+  const body = element('#allowlists-body');
+  run(`api = async () => { throw new Error('Service unavailable'); };`);
+  await run('renderAllowlists()');
+  assert.match(body.innerHTML, /Service unavailable/);
+  assert.match(body.innerHTML, /data-retry/);
+  assert.doesNotMatch(body.innerHTML, /No allowlists configured/);
 });
