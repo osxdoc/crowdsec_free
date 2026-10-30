@@ -638,3 +638,24 @@ test('an empty expiry bucket draws no bar instead of a misleading stub', () => {
   assert.ok(run('barHeight(1, 1000)') >= 3, 'a real count stays visible');
   assert.equal(run('barHeight(0, 0)'), 0, 'an empty set draws nothing');
 });
+
+test('the chart tooltip stays inside the frame on every side', () => {
+  const { run } = ui();
+  const top = (pointY, h, frameH) => run(`tooltipTop(${pointY}, ${h}, ${frameH})`);
+
+  // Plenty of room above.
+  assert.equal(top(140, 40, 170), 90);
+  // Not enough above: go below the point.
+  assert.equal(top(12, 40, 170), 22);
+  // 93px tooltip in a 170px frame fits on neither side: clamp, never overflow.
+  const clamped = top(85, 93, 170);
+  assert.ok(clamped >= 0 && clamped + 93 <= 170, `clamped tooltip must fit, got ${clamped}`);
+  // A short frame with a tall tooltip still never exceeds the frame.
+  assert.ok(top(5, 200, 100) >= 0);
+  // No layout yet: leave the default alone.
+  assert.equal(top(50, 40, 0), null);
+
+  assert.equal(run('tooltipPlacement(140, 40, 170)'), 'above');
+  assert.equal(run('tooltipPlacement(12, 40, 170)'), 'below');
+});
+
